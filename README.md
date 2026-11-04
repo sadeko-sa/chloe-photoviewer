@@ -31,7 +31,7 @@ The click zoom (100%), hold zoom (200%) and hold delay (100 ms) can be changed i
 
 Left / Right / Space / BackSpace / PageUp / PageDown = previous / next, Home / End = first / last,
 R / L = rotate right / left, F = fit width / height (toggle), 0 = fit to window, 1 / 2 = 100% / 200%, + / - = zoom, I = info,
-F11 = full screen (Esc leaves), Ctrl+O = open, Ctrl+, = settings, **Ctrl+W = close** (Ctrl+Q too).
+**F5 = quick save, F9 = quick load** (see Sessions), F11 = full screen (Esc leaves), Ctrl+O = open, Ctrl+, = settings, **Ctrl+W = close** (Ctrl+Q too).
 
 ## Starting, "Open with" in Explorer
 
@@ -62,10 +62,24 @@ The rotation is remembered per image while you stay in the same folder.
 The toolbar button cycles off / landscape / portrait: landscape turns portrait pictures sideways, portrait does the opposite.
 The direction (clockwise or counter-clockwise, shown by the arrow on the button) is set in the context menu > Auto rotate.
 
+## Sessions
+
+A session is a list of images; opening it opens one window per image. Only the images are saved (no zoom, no window
+position), and nothing is saved automatically.
+
+* **F5 quick save** - remembers the images of all open windows in one slot (overwrites the previous quick save). **F9 quick load** opens them again.
+* **Context menu > Session** - Quick save / Quick load, *Save session as...* (opens a dialog with the open images and a suggested
+  name: date + folder names; you can rename, add, remove and reorder images before saving), *Open session >* (the saved list) and *Manage sessions...*.
+* **Settings > Sessions** - add / edit / remove / reorder your sessions. Edit = rename, add or remove images, change their order.
+* Opening a session or the quick slot **adds** windows. An image that is already open just gets its window raised.
+  Files that no longer exist are skipped and the number of skipped files is shown.
+
+Sessions are stored in the config file (`sessions` and `quick_session`), so they are easy to back up or edit by hand while the program is closed.
+
 ## Context menu
 
 Open with > (your programs), Open file location, Copy file path / name /
-folder path, Properties, rotate, zoom, full screen, previous / next, Open image, Settings, Close.
+folder path, Properties, rotate, zoom, full screen, previous / next, Session >, Open image, Settings, Close.
 
 ## Settings (Ctrl+,)
 
@@ -73,6 +87,7 @@ folder path, Properties, rotate, zoom, full screen, previous / next, Open image,
 * **Programs** - add / edit / remove / reorder the programs of "Open with".
   Command: `{file}` = image path, `{dir}` = its folder; without `{file}` the path is added at the end.
   Examples: `gimp "{file}"`, `"C:\Program Files\Foo\foo.exe" "{file}"`, `flatpak run org.gimp.GIMP {file}`.
+* **Sessions** - add / edit / remove / reorder the saved sessions.
 * **Appearance** - language, theme, and the theme editor (live preview).
 * **About** - version and the Python / Pillow / Tk versions in use.
 

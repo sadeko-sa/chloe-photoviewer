@@ -23,6 +23,7 @@ Keys:
     1 / 2           100% / 200%
     + / -           zoom in / out               I       show / hide info
     F11             full screen (Esc leaves it)
+    F5              quick save of the open windows (session "Quick save (F5)")
     Ctrl+O          open image                  Ctrl+,  settings
     Ctrl+W          close (also Ctrl+Q)
 
@@ -33,8 +34,12 @@ exits, so all windows share one Python / Tk / Pillow memory footprint.
 Rotating only changes how the picture is shown. No file is ever written or
 modified by this program.
 
+Sessions: the images of all open windows can be saved (F5 = the session "Quick save (F5)",
+context menu > Session = named sessions) and opened again later. Sessions are
+managed in Settings > Sessions.
+
 Settings (Ctrl+, or the gear button) has the tabs General, Programs (the
-"Open with" list of the context menu) and Appearance (language and theme).
+"Open with" list of the context menu), Sessions and Appearance (language and theme).
 Language and theme work like in the Firmware Manager: lang/<code>.json and
 theme/<code>.json next to this script, used from the next start (see
 chloe_lang.py and chloe_theme.py).
@@ -60,6 +65,7 @@ import tkinter as tk
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Listener
 from tkinter import ttk, messagebox, filedialog
+import tkinter.font as tkfont
 
 try:
     from PIL import Image, ImageOps, ImageTk
@@ -77,7 +83,7 @@ from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.3"
+VERSION = "1.4"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -116,9 +122,12 @@ DEFAULTS = {
     "click_zoom": 100, "hold_zoom": 200, "hold_ms": 100,
     "wheel": "none", "last_path": "", "cfg_version": 2,
     "auto_rotate": "", "auto_dir": "cw", "single_instance": True,
+    "sessions": [], "quick_session": [],
 }
 """Config entries and their defaults ("apps": None = seed the open-with list;
-"wheel": none / navigate / zoom)."""
+"wheel": none / navigate / zoom; "sessions": [{"name", "paths"}];
+"quick_session": unused, old F5 slot that is moved into "sessions" on load; F5 now
+writes the session named QUICK_NAME)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -269,6 +278,75 @@ def clean_apps(apps):
                     and isinstance(a.get("cmd"), str) and a["name"].strip() and a["cmd"].strip():
                 out.append({"name": a["name"].strip(), "cmd": a["cmd"].strip()})
     return out
+
+
+def clean_paths(paths):
+    """@return only the non-empty strings of a list read from the config"""
+    if not isinstance(paths, list):
+        return []
+    return [p for p in paths if isinstance(p, str) and p.strip()]
+
+
+def clean_sessions(sessions):
+    """@return only the valid {"name", "paths"} entries (unique names) of a list read from the config"""
+    out, seen = [], set()
+    if isinstance(sessions, list):
+        for s in sessions:
+            if not (isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"].strip()):
+                continue
+            name = s["name"].strip()
+            if name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            out.append({"name": name, "paths": clean_paths(s.get("paths"))})
+    return out
+
+
+QUICK_NAME = "Quick save (F5)"
+"""Name of the session that F5 writes; it is a normal session, so it shows up in
+Settings > Sessions and in the context menu > Session > Open session."""
+
+
+def set_quick_session(sessions, paths):
+    """
+    Store the F5 images as the session named QUICK_NAME (replaced if it exists).
+
+    @param sessions  list of {"name", "paths"}
+    @param paths     image paths to store
+    @return          new list in which the quick session is the last entry
+    """
+    out = [s for s in sessions if s["name"].lower() != QUICK_NAME.lower()]
+    out.append({"name": QUICK_NAME, "paths": list(paths)})
+    return out
+
+
+def get_quick_session(sessions):
+    """
+    @param sessions  list of {"name", "paths"}
+    @return          the image paths of the quick session, or [] if there is none
+    """
+    for s in sessions:
+        if s["name"].lower() == QUICK_NAME.lower():
+            return list(s["paths"])
+    return []
+
+
+def default_session_name(paths):
+    """
+    Suggested name of a new session: today's date plus the folder names.
+
+    @param paths  image paths of the session
+    @return       e.g. "2026-11-05 Holiday, Scans"
+    """
+    folders = []
+    for p in paths:
+        name = os.path.basename(os.path.dirname(os.path.abspath(p)))
+        if name and name not in folders:
+            folders.append(name)
+    text = time.strftime("%Y-%m-%d")
+    if folders:
+        text += " " + ", ".join(folders[:3]) + (", ..." if len(folders) > 3 else "")
+    return text
 
 
 def split_command(cmd):
@@ -448,6 +526,30 @@ class Tip:
 # --------------------------------------------------------------------------- #
 
 
+def shorten_middle(text, font, width):
+    """
+    Shorten a text in the middle with "..." until it fits a pixel width.
+
+    @param text   text to shorten, e.g. a file path
+    @param font   tkinter.font.Font used to measure the text
+    @param width  available width in pixels
+    @return       text unchanged if it fits, else start + "..." + end
+    """
+    if width <= 0 or font.measure(text) <= width:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        keep = (lo + hi + 1) // 2
+        head = (keep + 1) // 2
+        cand = text[:head] + "..." + text[len(text) - (keep - head):]
+        if font.measure(cand) <= width:
+            lo = keep
+        else:
+            hi = keep - 1
+    head = (lo + 1) // 2
+    return text[:head] + "..." + text[len(text) - (lo - head):]
+
+
 def center_on(win, parent):
     """Place a dialog in the middle of its parent window."""
     win.update_idletasks()
@@ -544,16 +646,159 @@ class AppDialog(tk.Toplevel):
         self.destroy()
 
 
+class SessionDialog(tk.Toplevel):
+    """
+    Create / edit one session: a name and a list of images (one window each).
+    After wait_window(), .result is {"name", "paths"} or None if cancelled.
+    """
+
+    def __init__(self, parent, session=None, paths=None, taken=(), overwrite=False):
+        """
+        @param parent     owner window
+        @param session    {"name", "paths"} to edit, or None for a new one
+        @param paths      images of a new session (e.g. the open windows)
+        @param taken      names of the other sessions
+        @param overwrite  True = an existing name may be replaced after asking;
+                          False = an existing name is an error
+        """
+        super().__init__(parent)
+        self.withdraw()
+        self.title(t("dlg.edit_session" if session else "dlg.add_session"))
+        self.transient(parent)
+        self.result = None
+        self.taken = {n.lower() for n in taken}
+        self.overwrite = overwrite
+        self.paths = list(session["paths"] if session else (paths or []))
+        default = session["name"] if session else default_session_name(self.paths)
+        self.name_var = tk.StringVar(value=default)
+
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill="both", expand=True)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(1, weight=1)
+        top = ttk.Frame(frm)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        top.columnconfigure(1, weight=1)
+        ttk.Label(top, text=t("field.name")).grid(row=0, column=0, sticky="w")
+        name = ttk.Entry(top, textvariable=self.name_var, width=56)
+        name.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        box = ttk.Frame(frm)
+        box.grid(row=1, column=0, sticky="nsew")
+        self.tree = ttk.Treeview(box, columns=("path",), show="headings",
+                                 height=10, selectmode="extended")
+        self.tree.heading("path", text=t("prop.path"), anchor="w")
+        self.tree.column("path", width=560, stretch=True)
+        self.tree_font = tkfont.nametofont("TkDefaultFont")
+        self.tree.bind("<Configure>", lambda e: self._fill(self._selected()))
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        side = ttk.Frame(frm)
+        side.grid(row=1, column=1, sticky="n", padx=(10, 0))
+        for key, cmd in (("btn.add_images", self._add), ("btn.remove", self._remove),
+                         ("btn.up", lambda: self._move(-1)), ("btn.down", lambda: self._move(1))):
+            ttk.Button(side, text=t(key), command=cmd).pack(fill="x", pady=2)
+        btns = ttk.Frame(frm)
+        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(btns, text=t("btn.ok"), command=self._ok).pack(side="left", padx=3)
+        ttk.Button(btns, text=t("btn.cancel"), command=self.destroy).pack(side="left")
+
+        self._fill()
+        self.bind("<Return>", lambda e: self._ok())
+        for seq in ("<Escape>", "<Control-w>", "<Control-W>"):
+            self.bind(seq, lambda e: self.destroy())
+        center_on(self, parent)
+        self.deiconify()
+        name.focus_set()
+        name.selection_range(0, "end")
+        make_modal(self)
+
+    def _fill(self, select=()):
+        """
+        Show the full path of every image of self.paths in the list; a path that
+        is too long for the column is shortened in the middle with "...".
+
+        @param select  indexes to select afterwards
+        """
+        width = self.tree.column("path", "width") - 16
+        self.tree.delete(*self.tree.get_children())
+        for i, p in enumerate(self.paths):
+            suffix = "" if os.path.isfile(p) else "  (%s)" % t("val.missing")
+            room = width - self.tree_font.measure(suffix)
+            self.tree.insert("", "end", iid=str(i),
+                             values=(shorten_middle(p, self.tree_font, room) + suffix,))
+        for i in select:
+            if 0 <= i < len(self.paths):
+                self.tree.selection_add(str(i))
+
+    def _selected(self):
+        """@return the selected indexes, ascending"""
+        return sorted(int(i) for i in self.tree.selection())
+
+    def _add(self):
+        """Add images picked with the system dialog."""
+        pats = " ".join("*" + e for e in sorted(IMAGE_EXTS))
+        picked = filedialog.askopenfilenames(
+            parent=self, title=t("dlg.open"),
+            filetypes=[(t("filetype.images"), pats), (t("filetype.all"), "*.*")])
+        if isinstance(picked, str):
+            picked = self.tk.splitlist(picked)
+        have = [os.path.normcase(p) for p in self.paths]
+        first = len(self.paths)
+        for p in picked:
+            p = os.path.abspath(p)
+            if os.path.normcase(p) not in have:
+                self.paths.append(p)
+                have.append(os.path.normcase(p))
+        self._fill(range(first, len(self.paths)))
+
+    def _remove(self):
+        """Remove the selected images from the session."""
+        sel = self._selected()
+        self.paths = [p for i, p in enumerate(self.paths) if i not in sel]
+        self._fill()
+
+    def _move(self, step):
+        """Move the selected images up (-1) or down (+1)."""
+        sel = self._selected()
+        if not sel or sel[0] + step < 0 or sel[-1] + step >= len(self.paths):
+            return
+        for i in (sel if step < 0 else sel[::-1]):
+            self.paths[i], self.paths[i + step] = self.paths[i + step], self.paths[i]
+        self._fill([i + step for i in sel])
+
+    def _ok(self):
+        """Validate, then close with the result."""
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showerror(t("dlg.error"), t("msg.name_required"), parent=self)
+            return
+        if not self.paths:
+            messagebox.showerror(t("dlg.error"), t("msg.session_no_images"), parent=self)
+            return
+        if name.lower() in self.taken:
+            if not self.overwrite:
+                messagebox.showerror(t("dlg.error"), t("msg.name_exists"), parent=self)
+                return
+            if not messagebox.askyesno(t("dlg.session_overwrite"),
+                                       t("msg.session_overwrite", name=name), parent=self):
+                return
+        self.result = {"name": name, "paths": list(self.paths)}
+        self.destroy()
+
+
 class SettingsDialog(tk.Toplevel):
     """
-    Settings window with the tabs General, Programs, Appearance and About.
+    Settings window with the tabs General, Programs, Sessions, Appearance and About.
     OK writes everything to the app config (and saves it); Cancel drops it.
     """
 
     def __init__(self, app, tab=0):
         """
         @param app  the main window (App)
-        @param tab  tab to show first: 0 General, 1 Programs, 2 Appearance, 3 About
+        @param tab  tab to show first: 0 General, 1 Programs, 2 Sessions, 3 Appearance, 4 About
         """
         super().__init__(app)
         self.withdraw()
@@ -562,6 +807,7 @@ class SettingsDialog(tk.Toplevel):
         self.transient(app)
         cfg = app.cfg
         self.apps = [dict(a) for a in cfg["apps"]]
+        self.sessions = [{"name": s["name"], "paths": list(s["paths"])} for s in cfg["sessions"]]
         self.theme_code = cfg["theme"]
 
         frm = ttk.Frame(self, padding=10)
@@ -574,6 +820,7 @@ class SettingsDialog(tk.Toplevel):
         self.nb.pack(fill="both", expand=True)
         self._tab_general(cfg)
         self._tab_programs()
+        self._tab_sessions()
         self._tab_appearance(cfg)
         self._tab_about()
         self.nb.select(tab)
@@ -659,8 +906,8 @@ class SettingsDialog(tk.Toplevel):
         box.pack(side="left", fill="both", expand=True)
         self.tree = ttk.Treeview(box, columns=("name", "cmd"), show="headings",
                                  height=10, selectmode="extended")
-        self.tree.heading("name", text=t("col.app.name"))
-        self.tree.heading("cmd", text=t("col.app.cmd"))
+        self.tree.heading("name", text=t("col.app.name"), anchor="w")
+        self.tree.heading("cmd", text=t("col.app.cmd"), anchor="w")
         self.tree.column("name", width=150, stretch=False)
         self.tree.column("cmd", width=380)
         sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
@@ -719,6 +966,83 @@ class SettingsDialog(tk.Toplevel):
         for i in order:
             self.apps[i], self.apps[i + step] = self.apps[i + step], self.apps[i]
         self._fill_apps([i + step for i in sel])
+
+    # -- Sessions ----------------------------------------------------------- #
+
+    def _tab_sessions(self):
+        """The saved sessions (opened from the context menu > Session)."""
+        page = ttk.Frame(self.nb, padding=10)
+        self.nb.add(page, text=t("tab.sessions"))
+        side = ttk.Frame(page)
+        side.pack(side="right", fill="y", padx=(10, 0))
+        for key, cmd in (("btn.add", self._s_add), ("btn.edit", self._s_edit),
+                         ("btn.remove", self._s_remove), ("btn.up", lambda: self._s_move(-1)),
+                         ("btn.down", lambda: self._s_move(1))):
+            ttk.Button(side, text=t(key), command=cmd).pack(fill="x", pady=2)
+        box = ttk.Frame(page)
+        box.pack(side="left", fill="both", expand=True)
+        self.stree = ttk.Treeview(box, columns=("name", "count"), show="headings",
+                                  height=10, selectmode="extended")
+        self.stree.heading("name", text=t("col.session.name"), anchor="w")
+        self.stree.heading("count", text=t("col.session.count"), anchor="w")
+        self.stree.column("name", width=380, stretch=True)
+        self.stree.column("count", width=90, stretch=False, anchor="w")
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.stree.yview)
+        self.stree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.stree.pack(side="left", fill="both", expand=True)
+        self.stree.bind("<Double-1>", lambda e: self._s_edit())
+        self._fill_sessions()
+
+    def _fill_sessions(self, select=()):
+        """Show self.sessions in the list; `select` = indexes to select afterwards."""
+        self.stree.delete(*self.stree.get_children())
+        for i, s in enumerate(self.sessions):
+            self.stree.insert("", "end", iid=str(i), values=(s["name"], len(s["paths"])))
+        for i in select:
+            if 0 <= i < len(self.sessions):
+                self.stree.selection_add(str(i))
+
+    def _s_selected(self):
+        """@return the selected session indexes, ascending"""
+        return sorted(int(i) for i in self.stree.selection())
+
+    def _s_add(self):
+        """New session, pre-filled with the images of the open windows."""
+        dlg = SessionDialog(self, None, self.app.host.open_paths(),
+                            [s["name"] for s in self.sessions])
+        if dlg.result:
+            self.sessions.append(dlg.result)
+            self._fill_sessions([len(self.sessions) - 1])
+
+    def _s_edit(self):
+        """Edit the first selected session (name and images)."""
+        sel = self._s_selected()
+        if not sel:
+            return
+        i = sel[0]
+        taken = [s["name"] for j, s in enumerate(self.sessions) if j != i]
+        dlg = SessionDialog(self, self.sessions[i], taken=taken)
+        if dlg.result:
+            self.sessions[i] = dlg.result
+            self._fill_sessions([i])
+
+    def _s_remove(self):
+        """Remove the selected sessions (after asking)."""
+        sel = self._s_selected()
+        if sel and messagebox.askyesno(t("dlg.remove"), t("msg.remove_sessions", count=len(sel)),
+                                       parent=self):
+            self.sessions = [s for i, s in enumerate(self.sessions) if i not in sel]
+            self._fill_sessions()
+
+    def _s_move(self, step):
+        """Move the selected sessions up (-1) or down (+1)."""
+        sel = self._s_selected()
+        if not sel or sel[0] + step < 0 or sel[-1] + step >= len(self.sessions):
+            return
+        for i in (sel if step < 0 else sel[::-1]):
+            self.sessions[i], self.sessions[i + step] = self.sessions[i + step], self.sessions[i]
+        self._fill_sessions([i + step for i in sel])
 
     # -- Appearance --------------------------------------------------------- #
 
@@ -791,6 +1115,7 @@ class SettingsDialog(tk.Toplevel):
         cfg["hold_ms"] = clamp_int(self.v_ms.get(), 100, 2000, cfg["hold_ms"])
         cfg["wheel"] = self.v_wheel.get() if self.v_wheel.get() in ("none", "navigate", "zoom") else "none"
         cfg["apps"] = self.apps
+        cfg["sessions"] = self.sessions
         cfg["language"] = resolve_language(self.lang_code)
         cfg["theme"] = resolve_theme(self.theme_code)
         self.app.save_config()
@@ -856,6 +1181,7 @@ class App(tk.Toplevel):
         self._render_job = None
         self._cursor = None
         self._closing = False
+        self._toast = None
 
         if not start_path and self.cfg["last_path"] and os.path.isfile(self.cfg["last_path"]):
             start_path = self.cfg["last_path"]     # started without a file: reopen the last one
@@ -902,6 +1228,11 @@ class App(tk.Toplevel):
         if not isinstance(cfg["last_path"], str):
             cfg["last_path"] = ""
         cfg["apps"] = default_apps() if cfg["apps"] is None else clean_apps(cfg["apps"])
+        cfg["sessions"] = clean_sessions(cfg["sessions"])
+        old_quick = clean_paths(cfg["quick_session"])
+        if old_quick and not get_quick_session(cfg["sessions"]):
+            cfg["sessions"] = set_quick_session(cfg["sessions"], old_quick)
+        cfg["quick_session"] = []
         cfg["click_zoom"] = clamp_int(cfg["click_zoom"], 10, 3200, 100)
         cfg["hold_zoom"] = clamp_int(cfg["hold_zoom"], 10, 3200, 200)
         cfg["hold_ms"] = clamp_int(cfg["hold_ms"], 100, 2000, 100)
@@ -1421,6 +1752,8 @@ class App(tk.Toplevel):
             self.go_to(0)
         elif key == "End":
             self.go_to(-1)
+        elif key == "F5":
+            self.quick_save()
         elif key == "F11":
             self.toggle_fullscreen()
         elif key == "Escape":
@@ -1545,6 +1878,41 @@ class App(tk.Toplevel):
             self._cursor = cursor
             self.cv.configure(cursor=cursor)
 
+    # -- sessions ----------------------------------------------------------- #
+
+    def toast(self, text, ms=1800):
+        """Show a short message at the bottom of the picture."""
+        if self._toast is not None:
+            self._toast.destroy()
+        lbl = tk.Label(self, text=text, relief="solid", bd=1, padx=12, pady=5)
+        lbl.place(relx=0.5, rely=0.92, anchor="center")
+        lbl.lift()
+        self._toast = lbl
+        lbl.after(ms, lambda: lbl.destroy() if self._toast is lbl else None)
+
+    def quick_save(self):
+        """F5: remember the images of all open windows in the one quick slot."""
+        paths = self.host.open_paths()
+        if not paths:
+            return
+        self.cfg["sessions"] = set_quick_session(self.cfg["sessions"], paths)
+        self.save_config()
+        self.toast(t("msg.quick_saved", count=len(paths)))
+
+    def save_session(self):
+        """Context menu: save the open windows as a named session (the dialog lets you review it)."""
+        names = [s["name"] for s in self.cfg["sessions"]]
+        dlg = SessionDialog(self, None, self.host.open_paths(), names, overwrite=True)
+        self.cv.focus_set()
+        if not dlg.result:
+            return
+        sessions = [s for s in self.cfg["sessions"]
+                    if s["name"].lower() != dlg.result["name"].lower()]
+        sessions.append(dlg.result)
+        self.cfg["sessions"] = sessions
+        self.save_config()
+        self.toast(t("msg.session_saved", name=dlg.result["name"]))
+
     # -- context menu ------------------------------------------------------- #
 
     def show_context(self, e):
@@ -1623,6 +1991,20 @@ class App(tk.Toplevel):
         m.add_command(label=t("menu.next"), state=many, accelerator="\u2192",
                       command=lambda: self.go(1))
         m.add_separator()
+        ses = tk.Menu(m, tearoff=0)
+        ses.add_command(label=t("menu.quick_save"), accelerator="F5", command=self.quick_save)
+        ses.add_separator()
+        ses.add_command(label=t("menu.session_save"), command=self.save_session)
+        opn = tk.Menu(ses, tearoff=0)
+        for s in self.cfg["sessions"]:
+            opn.add_command(label="%s (%d)" % (s["name"], len(s["paths"])),
+                            command=lambda s=s: self.host.open_session(s["paths"], self))
+        if not self.cfg["sessions"]:
+            opn.add_command(label=t("menu.no_sessions"), state="disabled")
+        ses.add_cascade(label=t("menu.session_open"), menu=opn)
+        ses.add_command(label=t("menu.session_manage"), command=lambda: self.open_settings(2))
+        m.add_cascade(label=t("menu.session"), menu=ses)
+        m.add_separator()
         m.add_command(label=t("menu.open_image"), accelerator="Ctrl+O", command=self.ask_open)
         m.add_command(label=t("menu.settings"), accelerator="Ctrl+,", command=self.open_settings)
         m.add_command(label=t("menu.close"), accelerator="Ctrl+W", command=self.close)
@@ -1684,7 +2066,7 @@ class App(tk.Toplevel):
                             parent=self)
 
     def open_settings(self, tab=0):
-        """Open the settings window (tab 0 General, 1 Programs, 2 Appearance, 3 About)."""
+        """Open the settings window (tab 0 General, 1 Programs, 2 Sessions, 3 Appearance, 4 About)."""
         SettingsDialog(self, tab)
         self.cv.focus_set()
 
@@ -1767,6 +2149,52 @@ class Viewers:
         win = App(self, path or None)
         self.windows.append(win)
         if self.windows[1:]: win.raise_window()
+
+    def open_paths(self):
+        """@return the image of every open window (existing files only, no duplicates)"""
+        out = []
+        for w in self.windows:
+            if w.path and os.path.isfile(w.path):
+                p = os.path.abspath(w.path)
+                if not any(same_file(p, q) for q in out):
+                    out.append(p)
+        return out
+
+    def open_session(self, paths, parent=None):
+        """
+        Open a session: its images get one window each and every other open
+        window is closed. Windows that already show an image of the session are
+        kept. Missing files are skipped and counted. If no file of the session
+        exists, nothing is closed.
+
+        @param paths   image paths of the session
+        @param parent  window for the "skipped" message
+        """
+        found = [p for p in paths if os.path.isfile(p)]
+        missing = len(paths) - len(found)
+        old = list(self.windows)
+        for p in found:
+            self.open(p)
+        self.root.after(30, lambda: self._finish_session(old, found, missing, parent))
+
+    def _finish_session(self, old, found, missing, parent):
+        """
+        Second half of open_session, run after the new windows exist: close the
+        windows that are not part of the session, then report skipped files.
+
+        @param old      windows that were open before the session was opened
+        @param found    existing image paths of the session
+        @param missing  number of session files that do not exist
+        @param parent   preferred window for the message (used if it is still open)
+        """
+        if found:
+            for w in old:
+                if w in self.windows and not (w.path and any(same_file(w.path, p) for p in found)):
+                    w.close()
+        if missing and self.windows:
+            if parent is None or parent not in self.windows:
+                parent = self.windows[-1]
+            messagebox.showinfo(APP_NAME, t("msg.session_missing", count=missing), parent=parent)
 
     def closed(self, win):
         """
