@@ -19,7 +19,8 @@ Mouse (FastStone style):
 Keys:
     Left / Right / Space / BackSpace / PageUp / PageDown   previous / next
     Home / End      first / last image          R / L   rotate right / left
-    F  or  0        fit to window               1 / 2   100% / 200%
+    F               fit width / height          0       fit to window
+    1 / 2           100% / 200%
     + / -           zoom in / out               I       show / hide info
     F11             full screen (Esc leaves it)
     Ctrl+O          open image                  Ctrl+,  settings
@@ -58,12 +59,17 @@ except ImportError:
     sys.exit("Chloe Photoviewer needs Pillow:  pip install pillow\n"
              "(Debian/Ubuntu also:  sudo apt install python3-tk python3-pil.imagetk)")
 
+try:                                   # optional: drop an image on the window to open it
+    import tkinterdnd2
+except ImportError:
+    tkinterdnd2 = None
+
 from chloe_lang import t, list_languages, resolve_language, set_language
 from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.0"
+VERSION = "1.2"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -92,6 +98,7 @@ DEFAULTS = {
     "enlarge_small": False, "show_info": False, "toolbar": True,
     "click_zoom": 100, "hold_zoom": 200, "hold_ms": 100,
     "wheel": "none", "last_path": "", "cfg_version": 2,
+    "auto_rotate": "", "auto_dir": "cw",
 }
 """Config entries and their defaults ("apps": None = seed the open-with list;
 "wheel": none / navigate / zoom)."""
@@ -467,14 +474,14 @@ class AppDialog(tk.Toplevel):
 
 class SettingsDialog(tk.Toplevel):
     """
-    Settings window with the tabs General, Programs and Appearance.
+    Settings window with the tabs General, Programs, Appearance and About.
     OK writes everything to the app config (and saves it); Cancel drops it.
     """
 
     def __init__(self, app, tab=0):
         """
         @param app  the main window (App)
-        @param tab  tab to show first: 0 General, 1 Programs, 2 Appearance
+        @param tab  tab to show first: 0 General, 1 Programs, 2 Appearance, 3 About
         """
         super().__init__(app)
         self.withdraw()
@@ -496,6 +503,7 @@ class SettingsDialog(tk.Toplevel):
         self._tab_general(cfg)
         self._tab_programs()
         self._tab_appearance(cfg)
+        self._tab_about()
         self.nb.select(tab)
 
         self.bind("<Escape>", lambda e: self.destroy())
@@ -537,6 +545,29 @@ class SettingsDialog(tk.Toplevel):
                         variable=self.v_wheel).pack(anchor="w")
         ttk.Radiobutton(page, text=t("opt.wheel_zoom"), value="zoom",
                         variable=self.v_wheel).pack(anchor="w")
+
+    # -- About -------------------------------------------------------------- #
+
+    def _tab_about(self):
+        """Program name, version and the versions it runs on."""
+        import PIL
+        page = ttk.Frame(self.nb, padding=14)
+        self.nb.add(page, text=t("tab.about"))
+        ttk.Label(page, text="%s %s" % (APP_NAME, VERSION),
+                  font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+        ttk.Label(page, text=t("about.description"), wraplength=380,
+                  justify="left").pack(anchor="w", pady=(4, 12))
+        grid = ttk.Frame(page)
+        grid.pack(anchor="w")
+        rows = ((t("about.python"), sys.version.split()[0]),
+                (t("about.pillow"), PIL.__version__),
+                (t("about.tk"), str(tk.TkVersion)),
+                (t("about.dnd"), t("about.dnd_on") if self.app.dnd_ok else t("about.dnd_off")),
+                (t("about.config"), config_path()))
+        for row, (name, value) in enumerate(rows):
+            ttk.Label(grid, text=name).grid(row=row, column=0, sticky="nw", pady=2)
+            ttk.Label(grid, text=value, wraplength=300, justify="left").grid(
+                row=row, column=1, sticky="w", padx=(12, 0), pady=2)
 
     # -- Programs ----------------------------------------------------------- #
 
@@ -756,10 +787,13 @@ class App(tk.Tk):
             start_path = self.cfg["last_path"]     # started without a file: reopen the last one
         self.var_info = tk.BooleanVar(value=self.cfg["show_info"])
         self.var_enlarge = tk.BooleanVar(value=self.cfg["enlarge_small"])
+        self.var_auto_mode = tk.StringVar(value=self.cfg["auto_rotate"])
+        self.var_auto_dir = tk.StringVar(value=self.cfg["auto_dir"])
 
         self.cv = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=1)
         self.cv.pack(fill="both", expand=True)
         self._build_toolbar()
+        self._init_dnd()
         self.apply_settings()
         self._bind_all()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -799,6 +833,10 @@ class App(tk.Tk):
         cfg["hold_ms"] = clamp_int(cfg["hold_ms"], 100, 2000, 100)
         if cfg["wheel"] not in ("none", "navigate", "zoom"):
             cfg["wheel"] = "none"
+        if cfg["auto_rotate"] not in ("", "landscape", "portrait"):
+            cfg["auto_rotate"] = ""
+        if cfg["auto_dir"] not in ("cw", "ccw"):
+            cfg["auto_dir"] = "cw"
         for key in ("enlarge_small", "show_info", "toolbar", "zoomed"):
             cfg[key] = bool(cfg[key])
         if not isinstance(cfg["geometry"], str):
@@ -835,19 +873,28 @@ class App(tk.Tk):
     def _build_toolbar(self):
         """The floating on-screen buttons (shown when the mouse moves)."""
         self.tb = ttk.Frame(self, padding=4, relief="solid", borderwidth=1)
+        self.var_auto = tk.StringVar()
         items = (("◀", "tip.prev", lambda: self.go(-1)),
                  ("▶", "tip.next", lambda: self.go(1)),
                  ("↺", "tip.rotate_left", lambda: self.rotate(-1)),
                  ("↻", "tip.rotate_right", lambda: self.rotate(1)),
-                 (t("btn.fit"), "tip.fit", self.set_fit),
-                 (t("btn.actual"), "tip.actual", lambda: self.zoom_to(100)),
-                 ("⛶", "tip.fullscreen", self.toggle_fullscreen),
-                 ("⚙", "tip.settings", self.open_settings))
+                 (t("btn.fit"), "tip.fit", self.toggle_fit),
+                 ("50%", "tip.zoom50", lambda: self.zoom_to(50)),
+                 ("75%", "tip.zoom75", lambda: self.zoom_to(75)),
+                 (t("btn.actual"), "tip.actual", lambda: self.zoom_to(100)))
         for text, tip, cmd in items:
             btn = ttk.Button(self.tb, text=text, width=max(3, len(text) + 1),
                              command=cmd, takefocus=False)
             btn.pack(side="left", padx=2)
             Tip(btn, tip)
+        btn = ttk.Button(self.tb, textvariable=self.var_auto, width=19,
+                         command=self.cycle_auto_rotate, takefocus=False)
+        btn.pack(side="left", padx=2)
+        Tip(btn, "tip.auto")
+        btn = ttk.Button(self.tb, text="⚙", width=3, command=self.open_settings, takefocus=False)
+        btn.pack(side="left", padx=2)
+        Tip(btn, "tip.settings")
+        self._update_auto_text()
 
     def _bind_all(self):
         """Mouse and key bindings."""
@@ -872,6 +919,35 @@ class App(tk.Tk):
                 pass
 
     # -- opening files ------------------------------------------------------ #
+
+    def _init_dnd(self):
+        """Accept files dropped on the window (needs the optional tkinterdnd2; silently off without it)."""
+        self.dnd_ok = False
+        if tkinterdnd2 is None:
+            return
+        try:
+            tkinterdnd2.TkinterDnD._require(self)
+            cmd = self.register(self._on_drop)
+            for w in (self, self.cv):
+                self.tk.call("tkdnd::drop_target", "register", w._w, "DND_Files")
+                self.tk.call("bind", w._w, "<<Drop>>", cmd + " %D")
+            self.dnd_ok = True
+        except (tk.TclError, RuntimeError, OSError):
+            pass
+
+    def _on_drop(self, data):
+        """
+        Drop handler: open the first dropped image file or folder.
+
+        @param data  Tcl list of dropped paths
+        @return      the drop action for tkdnd
+        """
+        for p in self.tk.splitlist(data):
+            if os.path.isdir(p) or (os.path.isfile(p)
+                                    and os.path.splitext(p)[1].lower() in IMAGE_EXTS):
+                self.after(0, lambda p=p: self.open_path(p))
+                break
+        return "copy"
 
     def open_path(self, path):
         """
@@ -940,7 +1016,7 @@ class App(tk.Tk):
 
     def _rebuild_rotated(self):
         """Make self.img from self.base and the view rotation of this file."""
-        quarter = self.rotations.get(self.path, 0)
+        quarter = self._quarter()
         if self.base is None:
             self.img = None
         elif quarter:
@@ -948,6 +1024,53 @@ class App(tk.Tk):
         else:
             self.img = self.base
         self._fit_key = None
+
+    def _quarter(self):
+        """@return quarter turns clockwise shown now: auto rotation + the manual one"""
+        auto = 0
+        mode = self.cfg["auto_rotate"]
+        if self.base is not None and mode:
+            w, h = self.base.size
+            if (mode == "landscape" and h > w) or (mode == "portrait" and w > h):
+                auto = 3 if self.cfg["auto_dir"] == "ccw" else 1
+        return (auto + self.rotations.get(self.path, 0)) % 4
+
+    def _update_auto_text(self):
+        """Button text and menu variable of the auto rotate mode."""
+        mode = self.cfg["auto_rotate"]
+        arrow = "" if not mode else (" \u21ba" if self.cfg["auto_dir"] == "ccw" else " \u21bb")
+        self.var_auto.set(t("btn.auto_" + (mode or "off")) + arrow)
+        self.var_auto_mode.set(mode)
+        self.var_auto_dir.set(self.cfg["auto_dir"])
+
+    def set_auto_rotate(self, mode):
+        """
+        Set the auto rotate mode and redraw.
+
+        @param mode  "" = off, "landscape" or "portrait"
+        """
+        self.cfg["auto_rotate"] = mode
+        self._update_auto_text()
+        self.mode = "fit"
+        self._rebuild_rotated()
+        self.render()
+
+    def set_auto_dir(self, direction):
+        """
+        Set the auto rotate direction and redraw.
+
+        @param direction  "cw" (clockwise) or "ccw" (counter clockwise)
+        """
+        self.cfg["auto_dir"] = direction
+        self._update_auto_text()
+        self.mode = "fit"
+        self._rebuild_rotated()
+        self.render()
+
+    def cycle_auto_rotate(self):
+        """Toolbar button: off -> landscape -> portrait -> off."""
+        order = ("", "landscape", "portrait")
+        self.set_auto_rotate(order[(order.index(self.cfg["auto_rotate"]) + 1) % 3])
 
     def _update_title(self):
         """Window title: file name and position in the folder."""
@@ -1019,6 +1142,25 @@ class App(tk.Tk):
         if self.img is not None:
             self.mode = "fit"
             self.render()
+
+    def toggle_fit(self):
+        """Fit width <-> fit height. From any other view: the side "fit to window" does not use."""
+        if self.img is None:
+            return
+        cw, ch = self.cv.winfo_width(), self.cv.winfo_height()
+        iw, ih = self.img.size
+        sw, sh = cw / iw, ch / ih
+        if self.mode == "zoom" and abs(self.scale - sw) < 1e-4:
+            axis = "h"
+        elif self.mode == "zoom" and abs(self.scale - sh) < 1e-4:
+            axis = "w"
+        else:
+            axis = "h" if sw < sh else "w"
+        s = min(max(sw if axis == "w" else sh, MIN_SCALE), MAX_SCALE)
+        self.mode = "zoom"
+        self.scale = s
+        self.ox, self.oy = (cw - iw * s) / 2, 0.0
+        self.render()
 
     def zoom_to(self, percent, cx=None, cy=None):
         """
@@ -1206,7 +1348,9 @@ class App(tk.Tk):
             self.rotate(1)
         elif key in ("R", "l", "L"):
             self.rotate(-1)
-        elif key in ("f", "F", "0"):
+        elif key in ("f", "F"):
+            self.toggle_fit()
+        elif key == "0":
             self.set_fit()
         elif key == "1":
             self.zoom_to(100)
@@ -1285,7 +1429,7 @@ class App(tk.Tk):
         x1 = min(iw, int(math.ceil((cw - ox) / s)))
         y1 = min(ih, int(math.ceil((ch - oy) / s)))
         if x1 > x0 and y1 > y0:
-            key = (self.path, self.rotations.get(self.path, 0), self.mode, round(s, 5), cw, ch)
+            key = (self.path, self._quarter(), self.mode, round(s, 5), cw, ch)
             if self.mode == "fit" and self._fit_key == key:
                 photo = self._fit_photo
             else:
@@ -1368,11 +1512,22 @@ class App(tk.Tk):
         m.add_command(label=t("menu.rotate_reset"), state=shown,
                       command=lambda: self.rotate(0))
         m.add_separator()
-        m.add_command(label=t("menu.fit"), state=shown, accelerator="F", command=self.set_fit)
+        m.add_command(label=t("menu.fit_toggle"), state=shown, accelerator="F",
+                      command=self.toggle_fit)
+        m.add_command(label=t("menu.fit"), state=shown, accelerator="0", command=self.set_fit)
         m.add_command(label=t("menu.actual"), state=shown, accelerator="1",
                       command=lambda: self.zoom_to(100))
         m.add_command(label=t("menu.zoom200"), state=shown, accelerator="2",
                       command=lambda: self.zoom_to(200))
+        auto = tk.Menu(m, tearoff=0)
+        for val, key in (("", "off"), ("landscape", "landscape"), ("portrait", "portrait")):
+            auto.add_radiobutton(label=t("menu.auto_" + key), variable=self.var_auto_mode,
+                                 value=val, command=lambda v=val: self.set_auto_rotate(v))
+        auto.add_separator()
+        for val in ("cw", "ccw"):
+            auto.add_radiobutton(label=t("menu.auto_" + val), variable=self.var_auto_dir,
+                                 value=val, command=lambda v=val: self.set_auto_dir(v))
+        m.add_cascade(label=t("menu.auto_rotate"), menu=auto, state=shown)
         m.add_checkbutton(label=t("menu.enlarge_small"), variable=self.var_enlarge,
                           command=self.toggle_enlarge)
         m.add_checkbutton(label=t("menu.show_info"), variable=self.var_info,
@@ -1442,12 +1597,12 @@ class App(tk.Tk):
         lines = [(t("prop.name"), os.path.basename(path)), (t("prop.folder"), os.path.dirname(path)),
                  (t("prop.size"), size), (t("prop.dimensions"), dims),
                  (t("prop.format"), self.fmt or "?"), (t("prop.modified"), when),
-                 (t("prop.rotation"), "%d\u00b0" % (90 * self.rotations.get(self.path, 0)))]
+                 (t("prop.rotation"), "%d\u00b0" % (90 * self._quarter()))]
         messagebox.showinfo(t("dlg.properties"), "\n".join("%s: %s" % kv for kv in lines),
                             parent=self)
 
     def open_settings(self, tab=0):
-        """Open the settings window (tab 0 General, 1 Programs, 2 Appearance)."""
+        """Open the settings window (tab 0 General, 1 Programs, 2 Appearance, 3 About)."""
         SettingsDialog(self, tab)
         self.cv.focus_set()
 

@@ -10,6 +10,7 @@ Small cross platform image viewer (Windows, Linux, macOS) written in Python / Tk
 * Windows: use `pythonw chloe_photoviewer.py photo.jpg` to start without a console window.
 * Debian / Ubuntu: `sudo apt install python3-tk python3-pil.imagetk`
 * Fedora: `sudo dnf install python3-tkinter python3-pillow-tk`
+* Drag and drop of an image or folder onto the window (optional): `pip install tkinterdnd2`. Without it the program works as before.
 * HEIC / AVIF files: `pip install pillow-heif` and add
   `from pillow_heif import register_heif_opener; register_heif_opener()` near the Pillow import.
 
@@ -22,14 +23,14 @@ Small cross platform image viewer (Windows, Linux, macOS) written in Python / Tk
 | click and hold | 200% while the button is down. The mouse position on the fitted picture picks the same relative spot of the zoomed picture (mouse at the bottom left of the picture = bottom left of the original). Release = back to fit |
 | wheel | does nothing by default; Settings > General: previous / next image or zoom |
 | right click | context menu |
-| move the mouse | on-screen buttons appear: prev, next, rotate left/right, fit, 1:1, full screen, settings |
+| move the mouse | on-screen buttons appear: prev, next, rotate left/right, fit width/height, 50%, 75%, 100%, auto rotate (off / landscape / portrait), settings |
 
 The click zoom (100%), hold zoom (200%) and hold delay (100 ms) can be changed in Settings > General.
 
 ## Keys
 
 Left / Right / Space / BackSpace / PageUp / PageDown = previous / next, Home / End = first / last,
-R / L = rotate right / left, F or 0 = fit, 1 / 2 = 100% / 200%, + / - = zoom, I = info,
+R / L = rotate right / left, F = fit width / height (toggle), 0 = fit to window, 1 / 2 = 100% / 200%, + / - = zoom, I = info,
 F11 = full screen (Esc leaves), Ctrl+O = open, Ctrl+, = settings, **Ctrl+W = close** (Ctrl+Q too).
 
 ## Starting, "Open with" in Explorer
@@ -46,6 +47,11 @@ F11 = full screen (Esc leaves), Ctrl+O = open, Ctrl+, = settings, **Ctrl+W = clo
 Rotating only changes the view. No file is ever written or modified by the program.
 The rotation is remembered per image while you stay in the same folder.
 
+## Auto rotate
+
+The toolbar button cycles off / landscape / portrait: landscape turns portrait pictures sideways, portrait does the opposite.
+The direction (clockwise or counter-clockwise, shown by the arrow on the button) is set in the context menu > Auto rotate.
+
 ## Context menu
 
 Open with > (your programs), Open file location, Copy file path / name /
@@ -58,6 +64,7 @@ folder path, Properties, rotate, zoom, full screen, previous / next, Open image,
   Command: `{file}` = image path, `{dir}` = its folder; without `{file}` the path is added at the end.
   Examples: `gimp "{file}"`, `"C:\Program Files\Foo\foo.exe" "{file}"`, `flatpak run org.gimp.GIMP {file}`.
 * **Appearance** - language, theme, and the theme editor (live preview).
+* **About** - version and the Python / Pillow / Tk versions in use.
 
 Language and theme are used from the next start.
 
