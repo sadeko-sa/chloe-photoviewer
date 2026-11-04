@@ -100,6 +100,9 @@ DRAG_PX = 4
 
 CONFIG_NAME = "chloe_photoviewer.json"
 
+ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image", "icon.png")
+"""Program icon (square PNG, transparent background, 256 px or more). Missing = Tk default."""
+
 INSTANCE_ADDR = ("127.0.0.1", 47615)
 """Local address the running viewer listens on; later launches send their file here."""
 
@@ -156,6 +159,34 @@ def enable_hidpi():
             ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
+
+
+def set_app_id():
+    """Windows: own taskbar identity, so the taskbar shows our icon and not the Python one. Call before Tk()."""
+    if not IS_WIN: return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ChloePhotoviewer")
+    except Exception:
+        pass
+
+
+def load_icons(root):
+    """
+    Set ICON_PATH as the icon of the root and of every window opened later.
+
+    @param root  the Tk root window
+    @return      the PhotoImage list; keep it alive as long as the program runs
+    """
+    try:
+        with Image.open(ICON_PATH) as im:
+            im = im.convert("RGBA")
+            icons = [ImageTk.PhotoImage(ImageOps.pad(im, (n, n), _RS.LANCZOS, color=(0, 0, 0, 0)))
+                     for n in (256, 64, 48, 32, 16)]
+        root.iconphoto(True, *icons)
+    except (OSError, ValueError, tk.TclError):
+        return []
+    return icons
 
 
 def config_dir():
@@ -1703,6 +1734,7 @@ class Viewers:
         cfg["language"] = set_language(cfg.get("language"))
         cfg["theme"] = set_theme(cfg.get("theme"))
         apply_theme(self.root)             # before any widget exists
+        self.icons = load_icons(self.root)
 
     def run(self, path=None):
         """
@@ -1788,6 +1820,7 @@ def main(argv):
         forwarded, listener = claim_instance(path)
         if forwarded: return
     enable_hidpi()
+    set_app_id()
     Viewers(cfg, listener).run(path)
 
 
