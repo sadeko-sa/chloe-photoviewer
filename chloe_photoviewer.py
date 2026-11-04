@@ -77,7 +77,7 @@ from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.2"
+VERSION = "1.3"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -1691,9 +1691,10 @@ class App(tk.Toplevel):
     # -- closing ------------------------------------------------------------ #
 
     def save_ui(self):
-        """Remember window size / position and maximized state."""
+        """Remember window size / position, maximized state and the shown image (the last closed window wins)."""
         zoomed = self._is_zoomed()
         self.cfg["zoomed"] = zoomed
+        if self.base is not None: self.cfg["last_path"] = os.path.abspath(self.path)
         if not zoomed and not self.fullscreen:
             self.cfg["geometry"] = self.winfo_geometry()
         self.save_config()
