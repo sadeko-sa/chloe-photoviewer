@@ -36,8 +36,6 @@ R / L = rotate right / left, F = fit width / height (toggle), 0 = fit to window,
 ## Starting, "Open with" in Explorer
 
 * Started without a file, it reopens the last viewed image.
-* Windows: double click `chloe_viewer.pyw` (no console window). Starting `chloe_photoviewer.py` with
-  python.exe also restarts itself without console (set `CHLOE_KEEP_CONSOLE=1` to keep it for debugging).
 * "Open with": run `install/install_windows.bat`, `install/install_linux.sh` or `install/install_mac.command` once
   (macOS: if it will not start, run `chmod +x install/*.command` first).
   Chloe Photoviewer then appears in the Open with list (Windows: also in "Choose another app"; macOS: `~/Applications/Chloe Photoviewer.app`).
@@ -104,7 +102,6 @@ Edit a theme in Settings > Appearance > Edit theme..., or by hand while the prog
 ## Files
 
     chloe_photoviewer.py   the program
-    chloe_viewer.pyw       launcher without console (Windows)
     install/               install_* / uninstall_* scripts for windows, linux, mac (all call install.py)
     chloe_lang.py          language loading, t("key")
     chloe_theme.py         theme loading / applying / editor
