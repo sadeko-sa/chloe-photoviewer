@@ -77,6 +77,7 @@
   "opt.enlarge_small": "小さい画像をウィンドウに合わせて拡大する",
   "opt.show_info": "画像上にファイル情報を表示する",
   "opt.show_toolbar": "画面上のボタンを表示する",
+  "opt.single_instance": "すべてのウィンドウで1つのプログラムを共有する（起動のたびに新しいウィンドウで開く）",
   "opt.wheel_navigate": "ホイール = 前/次の画像 (Ctrl + ホイール = 拡大縮小)",
   "opt.wheel_zoom": "ホイール = 拡大縮小 (Ctrl + ホイール = 前/次の画像)",
   "col.app.name": "名前",

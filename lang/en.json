@@ -77,6 +77,7 @@
   "opt.enlarge_small": "Enlarge small images to fit the window",
   "opt.show_info": "Show file info over the picture",
   "opt.show_toolbar": "Show on-screen buttons",
+  "opt.single_instance": "Share one program for all windows (every launch opens a new window)",
   "opt.wheel_navigate": "Wheel = previous / next image (Ctrl + wheel = zoom)",
   "opt.wheel_zoom": "Wheel = zoom (Ctrl + wheel = previous / next image)",
   "col.app.name": "Name",

@@ -26,6 +26,10 @@ Keys:
     Ctrl+O          open image                  Ctrl+,  settings
     Ctrl+W          close (also Ctrl+Q)
 
+Only one program process runs (Settings > General > single instance): starting it
+again sends the file to the running program, which opens it in a new window, and
+exits, so all windows share one Python / Tk / Pillow memory footprint.
+
 Rotating only changes how the picture is shown. No file is ever written or
 modified by this program.
 
@@ -44,13 +48,17 @@ The config is saved per user:
 import json
 import math
 import os
+import queue
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
+from multiprocessing import AuthenticationError
+from multiprocessing.connection import Client, Listener
 from tkinter import ttk, messagebox, filedialog
 
 try:
@@ -92,13 +100,19 @@ DRAG_PX = 4
 
 CONFIG_NAME = "chloe_photoviewer.json"
 
+INSTANCE_ADDR = ("127.0.0.1", 47615)
+"""Local address the running viewer listens on; later launches send their file here."""
+
+INSTANCE_KEY = b"chloe-photoviewer"
+"""Auth key of that connection (keeps other programs and other users out)."""
+
 DEFAULTS = {
     "language": "", "theme": "", "apps": None,
     "geometry": "1100x760", "zoomed": False,
     "enlarge_small": False, "show_info": False, "toolbar": True,
     "click_zoom": 100, "hold_zoom": 200, "hold_ms": 100,
     "wheel": "none", "last_path": "", "cfg_version": 2,
-    "auto_rotate": "", "auto_dir": "cw",
+    "auto_rotate": "", "auto_dir": "cw", "single_instance": True,
 }
 """Config entries and their defaults ("apps": None = seed the open-with list;
 "wheel": none / navigate / zoom)."""
@@ -159,6 +173,33 @@ def config_dir():
 def config_path():
     """@return full path of the config file"""
     return os.path.join(config_dir(), CONFIG_NAME)
+
+
+def claim_instance(path):
+    """
+    Make this process the only viewer. The first process listens on a local
+    port; any later one sends its file to it and reports that it can exit, so
+    all images share one process (one Python / Tk / Pillow memory footprint).
+    Binding the port is the lock: nothing to clean up after a crash.
+
+    @param path  image or folder of the command line, or None
+    @return      (forwarded, listener): forwarded True = a running viewer got the
+                 path, exit now; listener = socket to serve, None if the port is
+                 not available (then run as a normal stand-alone window)
+    """
+    msg = os.path.abspath(path) if path else ""
+    for _ in range(3):
+        try:
+            return False, Listener(INSTANCE_ADDR, authkey=INSTANCE_KEY)
+        except OSError:
+            pass
+        try:
+            with Client(INSTANCE_ADDR, authkey=INSTANCE_KEY) as conn:
+                conn.send(msg)
+            return True, None
+        except (OSError, EOFError, AuthenticationError):
+            time.sleep(0.1)
+    return False, None
 
 
 def clamp_int(value, lo, hi, default):
@@ -522,12 +563,14 @@ class SettingsDialog(tk.Toplevel):
         self.v_enlarge = tk.BooleanVar(value=cfg["enlarge_small"])
         self.v_info = tk.BooleanVar(value=cfg["show_info"])
         self.v_toolbar = tk.BooleanVar(value=cfg["toolbar"])
+        self.v_single = tk.BooleanVar(value=cfg["single_instance"])
         self.v_click = tk.StringVar(value=str(cfg["click_zoom"]))
         self.v_hold = tk.StringVar(value=str(cfg["hold_zoom"]))
         self.v_ms = tk.StringVar(value=str(cfg["hold_ms"]))
         self.v_wheel = tk.StringVar(value=cfg["wheel"])
         for var, key in ((self.v_enlarge, "opt.enlarge_small"), (self.v_info, "opt.show_info"),
-                         (self.v_toolbar, "opt.show_toolbar")):
+                         (self.v_toolbar, "opt.show_toolbar"),
+                         (self.v_single, "opt.single_instance")):
             ttk.Checkbutton(page, text=t(key), variable=var).pack(anchor="w", pady=2)
         grid = ttk.Frame(page)
         grid.pack(anchor="w", pady=(12, 0))
@@ -711,6 +754,7 @@ class SettingsDialog(tk.Toplevel):
         cfg["enlarge_small"] = self.v_enlarge.get()
         cfg["show_info"] = self.v_info.get()
         cfg["toolbar"] = self.v_toolbar.get()
+        cfg["single_instance"] = self.v_single.get()
         cfg["click_zoom"] = clamp_int(self.v_click.get(), 10, 3200, cfg["click_zoom"])
         cfg["hold_zoom"] = clamp_int(self.v_hold.get(), 10, 3200, cfg["hold_zoom"])
         cfg["hold_ms"] = clamp_int(self.v_ms.get(), 100, 2000, cfg["hold_ms"])
@@ -732,9 +776,9 @@ class SettingsDialog(tk.Toplevel):
 # --------------------------------------------------------------------------- #
 
 
-class App(tk.Tk):
+class App(tk.Toplevel):
     """
-    The viewer window: a canvas that draws the current image, an on-screen
+    One viewer window: a canvas that draws the current image, an on-screen
     button bar, the context menu and the mouse / key controls.
 
     View state:
@@ -744,16 +788,15 @@ class App(tk.Tk):
     quarter turns (clockwise); the image on disk is never touched.
     """
 
-    def __init__(self, start_path=None):
+    def __init__(self, host, start_path=None):
         """
+        @param host        the Viewers object that owns the Tk root, the config and all windows
         @param start_path  image file or folder to show first (optional)
         """
-        super().__init__()
+        super().__init__(host.root)
         self.withdraw()
-        self.cfg = self.load_config()
-        self.cfg["language"] = set_language(self.cfg.get("language"))
-        self.cfg["theme"] = set_theme(self.cfg.get("theme"))
-        apply_theme(self)                  # before any widget exists
+        self.host = host
+        self.cfg = host.cfg                # shared by all windows
         self.title(t("app.title", version=VERSION))
         self.minsize(360, 260)
         try:
@@ -837,7 +880,7 @@ class App(tk.Tk):
             cfg["auto_rotate"] = ""
         if cfg["auto_dir"] not in ("cw", "ccw"):
             cfg["auto_dir"] = "cw"
-        for key in ("enlarge_small", "show_info", "toolbar", "zoomed"):
+        for key in ("enlarge_small", "show_info", "toolbar", "zoomed", "single_instance"):
             cfg[key] = bool(cfg[key])
         if not isinstance(cfg["geometry"], str):
             cfg["geometry"] = DEFAULTS["geometry"]
@@ -919,6 +962,14 @@ class App(tk.Tk):
                 pass
 
     # -- opening files ------------------------------------------------------ #
+
+    def raise_window(self):
+        """Restore the window if minimized and bring it to the front."""
+        if self.state() == "iconic": self.deiconify()
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(100, lambda: self.attributes("-topmost", False))
+        self.focus_force()
 
     def _init_dnd(self):
         """Accept files dropped on the window (needs the optional tkinterdnd2; silently off without it)."""
@@ -1617,7 +1668,7 @@ class App(tk.Tk):
         self.save_config()
 
     def close(self, _e=None):
-        """Ctrl+W / window close: save the window state and quit."""
+        """Ctrl+W / window close: save the window state and close this window."""
         if self._closing:
             return "break"
         self._closing = True
@@ -1625,7 +1676,102 @@ class App(tk.Tk):
             self.save_ui()
         finally:
             self.destroy()
+            self.host.closed(self)
         return "break"
+
+
+class Viewers:
+    """
+    The one program process: a hidden Tk root, the shared config and every
+    viewer window. With a listener (see claim_instance) it also opens the files
+    of later launches as new windows, so all windows share one Python / Tk /
+    Pillow footprint. The program ends with its last window.
+    """
+
+    def __init__(self, cfg, listener=None):
+        """
+        @param cfg       config dict (App.load_config()), shared by all windows
+        @param listener  socket of claim_instance() that receives the files of later launches
+        """
+        self.cfg = cfg
+        self.listener = listener
+        self.windows = []
+        self.inbox = queue.Queue()
+        self.closing = False
+        self.root = tk.Tk()
+        self.root.withdraw()
+        cfg["language"] = set_language(cfg.get("language"))
+        cfg["theme"] = set_theme(cfg.get("theme"))
+        apply_theme(self.root)             # before any widget exists
+
+    def run(self, path=None):
+        """
+        Open the first window and run until the last one is closed.
+
+        @param path  image or folder of the command line (optional)
+        """
+        self.open(path)
+        if self.listener:
+            threading.Thread(target=self._serve, daemon=True).start()
+            self._poll_inbox()
+        self.root.mainloop()
+
+    def open(self, path=None):
+        """
+        Show an image in a new window; if a window already shows it, raise that
+        one. No path: raise the newest window (or open an empty one).
+
+        @param path  image file or folder, or empty
+        """
+        if path:
+            for w in self.windows:
+                if w.path and same_file(w.path, path):
+                    w.raise_window()
+                    return
+        elif self.windows:
+            self.windows[-1].raise_window()
+            return
+        win = App(self, path or None)
+        self.windows.append(win)
+        if self.windows[1:]: win.raise_window()
+
+    def closed(self, win):
+        """
+        A window was closed; the program ends with the last one.
+
+        @param win  the closed App
+        """
+        if win in self.windows: self.windows.remove(win)
+        if self.windows: return
+        self.closing = True
+        if self.listener: self.listener.close()
+        self.root.destroy()
+
+    def _serve(self):
+        """Thread: receive the paths sent by later launches and queue them for the Tk thread."""
+        while not self.closing:
+            try:
+                conn = self.listener.accept()
+            except AuthenticationError:
+                continue
+            except (OSError, EOFError):
+                return
+            try:
+                with conn:
+                    path = conn.recv()
+            except (OSError, EOFError):
+                continue
+            if isinstance(path, str): self.inbox.put(path)
+
+    def _poll_inbox(self):
+        """Tk thread: open the paths that later launches sent."""
+        while True:
+            try:
+                path = self.inbox.get_nowait()
+            except queue.Empty:
+                break
+            self.open(path)
+        if not self.closing: self.root.after(150, self._poll_inbox)
 
 
 def main(argv):
@@ -1635,8 +1781,14 @@ def main(argv):
     @param argv  command line without the program name; an optional image or folder
     """
     detach_console()
+    path = argv[0] if argv else None
+    cfg = App.load_config()
+    listener = None
+    if cfg["single_instance"]:
+        forwarded, listener = claim_instance(path)
+        if forwarded: return
     enable_hidpi()
-    App(argv[0] if argv else None).mainloop()
+    Viewers(cfg, listener).run(path)
 
 
 if __name__ == "__main__":

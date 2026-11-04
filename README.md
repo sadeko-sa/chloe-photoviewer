@@ -44,6 +44,14 @@ F11 = full screen (Esc leaves), Ctrl+O = open, Ctrl+, = settings, **Ctrl+W = clo
   It never becomes the default viewer. To undo it run the matching `uninstall_*` script.
   Re-run the install script if you move the folder or change Python.
 
+## Single instance
+
+Only one program process runs. Starting it again (Open with, double click, command line) sends the file to the
+running program, which opens it in a new window and exits the new process, so all windows share one memory footprint.
+A file that is already shown just gets its window raised. The program ends when the last window is closed.
+Turn it off in Settings > General. It uses a local port (127.0.0.1:47615); if that port is blocked the
+program simply runs as a normal separate window.
+
 ## Rotation
 
 Rotating only changes the view. No file is ever written or modified by the program.
@@ -61,7 +69,7 @@ folder path, Properties, rotate, zoom, full screen, previous / next, Open image,
 
 ## Settings (Ctrl+,)
 
-* **General** - zoom values, wheel behavior, show info / on-screen buttons, enlarge small images.
+* **General** - zoom values, wheel behavior, show info / on-screen buttons, enlarge small images, single instance.
 * **Programs** - add / edit / remove / reorder the programs of "Open with".
   Command: `{file}` = image path, `{dir}` = its folder; without `{file}` the path is added at the end.
   Examples: `gimp "{file}"`, `"C:\Program Files\Foo\foo.exe" "{file}"`, `flatpak run org.gimp.GIMP {file}`.
