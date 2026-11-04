@@ -83,7 +83,7 @@ from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.4"
+VERSION = "1.5"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -1307,7 +1307,10 @@ class App(tk.Toplevel):
         cv.bind("<ButtonPress-1>", self.on_press)
         cv.bind("<B1-Motion>", self.on_drag)
         cv.bind("<ButtonRelease-1>", self.on_release)
-        cv.bind("<Motion>", self.poke_toolbar)
+        # toolbar: bound on the window so motion over the canvas AND over the
+        # buttons themselves is seen; <Leave> hides it as soon as the pointer goes away
+        self.bind("<Motion>", self.poke_toolbar, add="+")
+        self.bind("<Leave>", self.poke_toolbar, add="+")
         cv.bind("<Configure>", self.on_resize)
         ctx = ("<Button-2>", "<Control-Button-1>") if IS_MAC else ("<Button-3>",)
         for seq in ctx:
@@ -1791,28 +1794,42 @@ class App(tk.Toplevel):
 
     # -- toolbar ------------------------------------------------------------ #
 
-    def poke_toolbar(self, _e=None):
-        """Show the button bar and hide it again after a moment without movement."""
-        if not self.cfg["toolbar"]:
-            return
-        if not self.tb.winfo_ismapped():
-            self.tb.place(relx=0.5, rely=1.0, anchor="s", y=-18)
-        self.tb.lift()
-        if self._tb_job:
-            self.after_cancel(self._tb_job)
-        self._tb_job = self.after(2200, self._hide_toolbar)
+    TB_NEAR = 20
+    """Pixels around the button bar where the pointer still counts as "near"."""
 
-    def _hide_toolbar(self):
-        """Hide the button bar unless the pointer is on it."""
-        self._tb_job = None
+    def _pointer_near_toolbar(self):
+        """
+        Is the mouse pointer on or close to the place where the button bar sits
+        (bottom centre of the window)?
+
+        @return  True if the pointer is inside the bar's area plus TB_NEAR pixels
+        """
         try:
-            w = self.winfo_containing(*self.winfo_pointerxy())
-        except (KeyError, tk.TclError):
-            w = None
-        if w is not None and str(w).startswith(str(self.tb)):
-            self._tb_job = self.after(1000, self._hide_toolbar)
+            px, py = self.winfo_pointerxy()
+        except tk.TclError:
+            return False
+        x = px - self.winfo_rootx()
+        y = py - self.winfo_rooty()
+        w, h = self.winfo_width(), self.winfo_height()
+        if not (0 <= x < w and 0 <= y < h):
+            return False
+        bw, bh = self.tb.winfo_reqwidth(), self.tb.winfo_reqheight()
+        left = (w - bw) / 2 - self.TB_NEAR
+        right = (w + bw) / 2 + self.TB_NEAR
+        top = h - 18 - bh - self.TB_NEAR
+        return left <= x <= right and y >= top
+
+    def poke_toolbar(self, _e=None):
+        """Show the button bar while the pointer is near it, hide it at once otherwise."""
+        if not self.cfg["toolbar"]:
+            self.tb.place_forget()
             return
-        self.tb.place_forget()
+        if self._pointer_near_toolbar():
+            if not self.tb.winfo_ismapped():
+                self.tb.place(relx=0.5, rely=1.0, anchor="s", y=-18)
+            self.tb.lift()
+        elif self.tb.winfo_ismapped():
+            self.tb.place_forget()
 
     # -- drawing ------------------------------------------------------------ #
 
