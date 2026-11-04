@@ -162,5 +162,6 @@
   "msg.session_missing": "{count} file(s) not found and skipped.",
   "msg.remove_sessions": "Remove {count} session(s) from the list?",
   "tip.new_window": "New window (Ctrl+N)",
-  "menu.new_window": "New window"
+  "menu.new_window": "New window",
+  "opt.per_user_config": "Save the config per user (for shared installs: each user gets their own settings and sessions)"
 }

@@ -30,7 +30,7 @@ Keys:
     Ctrl+Tab        next tab (Shift: previous)  Ctrl+N  new window
     Ctrl+O          open image(s)               Ctrl+,  settings
     Ctrl+W          close tab                   Ctrl+Q  close window
-    F5              quick save: the tabs of this window (session "Quick save (F5)")
+    F5              quick save: the tabs of this window (session "quicksave")
 
 Only one program process runs (Settings > General > single instance): starting it
 again sends the file to the running program, which opens it as a tab of the window
@@ -41,10 +41,12 @@ Rotating only changes how the picture is shown. No file is ever written or modif
 Language and theme: lang/<code>.json and theme/<code>.json next to this script, used
 from the next start (see chloe_lang.py and chloe_theme.py).
 
-The config is saved per user:
+The config is saved next to this script (chloe_photoviewer.json). For shared installs
+turn on Settings > General > "Save the config per user"; it is then saved per user:
     Windows  %APPDATA%\\ChloePhotoviewer\\chloe_photoviewer.json
     Linux    ~/.config/chloe-photoviewer/chloe_photoviewer.json
     macOS    ~/Library/Application Support/ChloePhotoviewer/chloe_photoviewer.json
+If the program folder is not writable the per-user location is used as well.
 """
 
 import json
@@ -80,7 +82,7 @@ from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.6"
+VERSION = "1.10.1"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -108,18 +110,23 @@ INSTANCE_ADDR = ("127.0.0.1", 47615)
 INSTANCE_KEY = b"chloe-photoviewer"
 """Auth key of that connection (keeps other programs and other users out)."""
 
-QUICK_NAME = "Quick save (F5)"
+QUICK_NAME = "quicksave"
 """Name of the session F5 writes; it is a normal session (Settings > Sessions)."""
+
+LAST_NAME = "lastsession"
+"""Name of the session written when the last window closes; it is reopened at the next start without a file."""
 
 DEFAULTS = {
     "language": "", "theme": "", "apps": None, "geometry": "1100x760", "zoomed": False,
     "enlarge_small": False, "show_info": False, "toolbar": True,
     "click_zoom": 100, "hold_zoom": 200, "hold_ms": 100, "wheel": "none",
     "last_path": "", "auto_rotate": "", "auto_dir": "cw", "single_instance": True,
-    "sessions": [],
+    "sessions": [], "per_user_config": False,
 }
 """Config entries and defaults ("apps": None = seed the open-with list;
-"wheel": none / navigate / zoom; "sessions": [{"name", "paths"}])."""
+"wheel": none / navigate / zoom; "sessions": [{"name", "paths"}];
+"per_user_config": True = config in the per-user folder, the file next to the script then
+only holds this switch)."""
 
 RANGES = {"click_zoom": (10, 3200), "hold_zoom": (10, 3200), "hold_ms": (100, 2000)}
 """Allowed (min, max) of the numeric settings."""
@@ -186,7 +193,7 @@ def load_icons(root):
     return icons
 
 
-def config_path():
+def user_config_path():
     """@return full path of the per-user config file (platform specific)"""
     if IS_WIN:
         base = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "ChloePhotoviewer")
@@ -196,6 +203,45 @@ def config_path():
         base = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
                             "chloe-photoviewer")
     return os.path.join(base, CONFIG_NAME)
+
+
+def local_config_path():
+    """@return full path of the config file in the program folder (next to this script)"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_NAME)
+
+
+def read_json(path):
+    """@return the dict stored in a JSON file; empty if it is missing or invalid"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def local_writable():
+    """@return True if the config can be written in the program folder"""
+    path = local_config_path()
+    if os.path.exists(path):
+        return os.access(path, os.W_OK)
+    return os.access(os.path.dirname(path), os.W_OK)
+
+
+def per_user_config():
+    """@return True if the file next to the script says the config lives in the per-user folder"""
+    return read_json(local_config_path()).get("per_user_config") is True
+
+
+def config_path(per_user=None):
+    """
+    @param per_user  True = per-user folder, False = program folder, None = as saved
+    @return          full path of the config file in use; the per-user one also when the program
+                     folder is not writable
+    """
+    if per_user is None:
+        per_user = per_user_config()
+    return user_config_path() if per_user or not local_writable() else local_config_path()
 
 
 def clamp_int(value, lo, hi, default):
@@ -269,13 +315,13 @@ def default_session_name(paths):
 def load_config():
     """@return the config dict: defaults, overridden by the saved file (values checked)"""
     cfg = dict(DEFAULTS)
-    try:
-        with open(config_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    if isinstance(data, dict):
-        cfg.update({k: v for k, v in data.items() if k in DEFAULTS})
+    per_user = per_user_config()
+    path = config_path(per_user)
+    data = read_json(path)
+    if not data and path == local_config_path() and not os.path.exists(path):
+        data = read_json(user_config_path())             # first start: take over an older per-user config
+    cfg.update({k: v for k, v in data.items() if k in DEFAULTS})
+    cfg["per_user_config"] = per_user
     cfg["apps"] = default_apps() if cfg["apps"] is None else clean_apps(cfg["apps"])
     cfg["sessions"] = clean_sessions(cfg["sessions"])
     for key, (lo, hi) in RANGES.items():
@@ -284,7 +330,7 @@ def load_config():
                     ("auto_dir", ("cw", "ccw"))):
         if cfg[key] not in ok:
             cfg[key] = DEFAULTS[key]
-    for key in ("enlarge_small", "show_info", "toolbar", "zoomed", "single_instance"):
+    for key in ("enlarge_small", "show_info", "toolbar", "zoomed", "single_instance", "per_user_config"):
         cfg[key] = bool(cfg[key])
     for key in ("last_path", "geometry"):
         if not isinstance(cfg[key], str):
@@ -292,17 +338,31 @@ def load_config():
     return cfg
 
 
+def write_json(path, data):
+    """Write a dict as JSON (temporary file first); raises OSError on failure."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(path + ".tmp", path)
+
+
 def save_config(cfg, parent=None):
-    """Write the config (temporary file first); show an error box on failure."""
-    path = config_path()
+    """
+    Write the config; show an error box on failure. Per-user mode writes the per-user file and
+    leaves only the switch in the file next to the script, so the next start finds it.
+    """
+    per_user = bool(cfg.get("per_user_config"))
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(path + ".tmp", path)
+        write_json(config_path(per_user), cfg)
     except OSError as exc:
         messagebox.showerror(t("dlg.error"), t("msg.save_failed", error=exc), parent=parent)
+        return
+    if per_user:
+        try:
+            write_json(local_config_path(), {"per_user_config": True})
+        except OSError:
+            pass                                    # read-only program folder: the per-user file is used anyway
 
 
 def claim_instance(path):
@@ -827,9 +887,10 @@ class SettingsDialog(Dialog):
     def _tab_general(self, cfg):
         page = self._page("tab.general")
         self.flags = {k: tk.BooleanVar(value=cfg[k]) for k in
-                      ("enlarge_small", "show_info", "toolbar", "single_instance")}
+                      ("enlarge_small", "show_info", "toolbar", "single_instance", "per_user_config")}
         for key, text in (("enlarge_small", "opt.enlarge_small"), ("show_info", "opt.show_info"),
-                          ("toolbar", "opt.show_toolbar"), ("single_instance", "opt.single_instance")):
+                          ("toolbar", "opt.show_toolbar"), ("single_instance", "opt.single_instance"),
+                          ("per_user_config", "opt.per_user_config")):
             ttk.Checkbutton(page, text=t(text), variable=self.flags[key]).pack(anchor="w", pady=2)
         grid = ttk.Frame(page)
         grid.pack(anchor="w", pady=(12, 0))
@@ -926,7 +987,7 @@ class SettingsDialog(Dialog):
         rows = ((t("about.python"), sys.version.split()[0]), (t("about.pillow"), PIL.__version__),
                 (t("about.tk"), str(tk.TkVersion)),
                 (t("about.dnd"), t("about.dnd_on") if self.app.dnd_ok else t("about.dnd_off")),
-                (t("about.config"), config_path()))
+                (t("about.config"), config_path(self.app.cfg["per_user_config"])))
         for row, (name, value) in enumerate(rows):
             ttk.Label(grid, text=name).grid(row=row, column=0, sticky="nw", pady=2)
             ttk.Label(grid, text=value, wraplength=300, justify="left").grid(
@@ -1728,7 +1789,7 @@ class Window(tk.Toplevel):
         lbl.after(ms, lambda: lbl.destroy() if self._toast is lbl else None)
 
     def quick_save(self):
-        """F5: save the tabs of this window as the session "Quick save (F5)"."""
+        """F5: save the tabs of this window as the session "quicksave"."""
         paths = self.paths()
         if paths:
             self.cfg["sessions"] = upsert_session(self.cfg["sessions"], QUICK_NAME, paths)
@@ -1897,6 +1958,11 @@ class Window(tk.Toplevel):
         self.cfg["zoomed"] = zoomed
         if not zoomed and not self.fullscreen:
             self.cfg["geometry"] = self.winfo_geometry()
+        paths = self.paths()
+        if paths and len(self.viewer.windows) <= 1:      # the last window: remember its tabs
+            self.cfg["sessions"] = upsert_session(self.cfg["sessions"], LAST_NAME, paths)
+            if self.tab and os.path.isfile(self.tab.path):
+                self.cfg["last_path"] = os.path.abspath(self.tab.path)
         self.save_config()
         self.destroy()
         self.viewer.closed(self)
@@ -1930,14 +1996,31 @@ class Viewer:
         """
         Open the first window and run until the last one is closed.
 
-        @param path  image or folder of the command line; none = reopen the last image
+        @param path  image or folder of the command line; none = reopen the tabs of the
+                     last session (the last window closed), else the last image
         """
-        last = self.cfg["last_path"]
-        self.open(path or (last if os.path.isfile(last) else None))
+        if path:
+            self.open(path)
+        else:
+            self._restore_last()
         if self.listener:
             threading.Thread(target=self._serve, daemon=True).start()
             self._poll_inbox()
         self.root.mainloop()
+
+    def _restore_last(self):
+        """Open the tabs of the session "lastsession" in one window and show the tab that was shown."""
+        last = self.cfg["last_path"]
+        saved = next((s["paths"] for s in self.cfg["sessions"] if s["name"].lower() == LAST_NAME.lower()), [])
+        found = [p for p in saved if os.path.isfile(p)]
+        if not found:
+            self.open(last if os.path.isfile(last) else None)
+            return
+        win = self.new_window()
+        win.open_paths(found)
+        tb = win.find_tab(last) if last else None
+        if tb:
+            win.show_tab(tb)
 
     def new_window(self, tabs=(), geometry=None):
         """@return a new Window showing the given tabs"""

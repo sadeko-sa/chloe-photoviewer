@@ -162,5 +162,6 @@
   "msg.session_missing": "{count} 件のファイルが見つからないためスキップしました。",
   "msg.remove_sessions": "{count} 件のセッションを一覧から削除しますか？",
   "tip.new_window": "新しいウィンドウ (Ctrl+N)",
-  "menu.new_window": "新しいウィンドウ"
+  "menu.new_window": "新しいウィンドウ",
+  "opt.per_user_config": "設定をユーザーごとに保存する（共有インストール用: ユーザーごとに設定とセッションを持ちます）"
 }

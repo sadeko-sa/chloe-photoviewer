@@ -1,6 +1,6 @@
 # Chloe Photoviewer
-
 Small cross platform image viewer (Windows, Linux, macOS) written in Python / Tkinter.
+![Chloe Photoviewer](image/preview.jpg)
 
 ## Install and run
 
@@ -37,7 +37,7 @@ Ctrl+O = open, Ctrl+, = settings, Ctrl+W = close tab (the last tab closes the wi
 
 ## Starting, "Open with" in Explorer
 
-* Started without a file, it reopens the last viewed image (one image, not the whole previous set of tabs; use a session to restore several).
+* Started without a file, it reopens the tabs of the last session (see Sessions) and shows the tab you were on. If there is none, it reopens the last viewed image.
 * Windows: double click `chloe_viewer.pyw` (no console window). Starting `chloe_photoviewer.py` with
   python.exe also restarts itself without console (set `CHLOE_KEEP_CONSOLE=1` to keep it for debugging).
 * "Open with": run `install/install_windows.bat`, `install/install_linux.sh` or `install/install_mac.command` once
@@ -77,13 +77,14 @@ The direction (clockwise or counter-clockwise, shown by the arrow on the button)
 ## Sessions
 
 A session is a list of images; opening it adds them as tabs of the current window. Only the images are saved (no zoom, no window
-position), and nothing is saved automatically. A session always holds the tabs of ONE window, never of all windows.
+position), and nothing is saved automatically except *lastsession* (below). A session always holds the tabs of ONE window, never of all windows.
 
-* **F5 quick save** - saves the tabs of this window as the session *Quick save (F5)* (overwrites the previous one). Open it from
+* **F5 quick save** - saves the tabs of this window as the session *quicksave* (overwrites the previous one). Open it from
   Context menu > Session > Open session.
 * **Context menu > Session** - Quick save, *Save session as...* (opens a dialog with the open images and a suggested
   name: date + folder names; you can rename, add, remove and reorder images before saving), *Open session >* (the saved list) and *Manage sessions...*.
 * **Settings > Sessions** - add / edit / remove / reorder your sessions. Edit = rename, add or remove images, change their order.
+* **lastsession** - when the last window closes, its tabs are saved automatically as the session *lastsession* (overwritten each time) and reopened at the next start without a file. With several windows, the one closed last wins. Files that no longer exist are skipped silently at start.
 * Files that no longer exist are skipped and the number of skipped files is shown.
 
 Sessions are stored in the config file (`sessions`), so they are easy to back up or edit by hand while the program is closed.
@@ -98,7 +99,7 @@ New window, Open image, Settings, Close (tab).
 
 ## Settings (Ctrl+,)
 
-* **General** - zoom values, wheel behavior, show info / on-screen buttons, enlarge small images, single instance.
+* **General** - zoom values, wheel behavior, show info / on-screen buttons, enlarge small images, single instance, config per user.
 * **Programs** - add / edit / remove / reorder the programs of "Open with".
   Command: `{file}` = image path, `{dir}` = its folder; without `{file}` the path is added at the end.
   Examples: `gimp "{file}"`, `"C:\Program Files\Foo\foo.exe" "{file}"`, `flatpak run org.gimp.GIMP {file}`.
@@ -125,5 +126,15 @@ Edit a theme in Settings > Appearance > Edit theme..., or by hand while the prog
     chloe_theme.py         theme loading / applying / editor
     lang/  theme/          language and theme files
 
-Config is saved per user:
+## Config location
+
+By default the config (settings, programs, sessions) is saved next to the program as `chloe_photoviewer.json`,
+so the folder can be copied or moved as a whole (portable). Settings made with an older version in the per-user
+folder are taken over at the first start.
+
+For shared installs (several users on one computer, program folder read-only or shared) turn on
+**Settings > General > Save the config per user**. Each user then gets their own settings and sessions here:
 Windows `%APPDATA%\ChloePhotoviewer`, Linux `~/.config/chloe-photoviewer`, macOS `~/Library/Application Support/ChloePhotoviewer`.
+The file next to the program then only holds that switch, so it applies to every user of the folder.
+If the program folder is not writable, the per-user location is used automatically.
+Settings > About shows the file in use. Turning the option off moves the config back to the program folder.
