@@ -2,13 +2,13 @@
 """
 chloe_lang.py - Program text for chloe_photoviewer.py and chloe_theme.py.
 
-All text the user sees (menus, buttons, column headings, dialogs, log lines,
+All text the user sees (menus, buttons, column headings, dialogs,
 status texts, color descriptions) lives in lang/<code>.json next to this script.
 
 lang/<code>.json layout (flat, one key per text, plus "language.name"):
     {"language.name": "English", "<key>": "<text with {placeholders}>", ...}
-Placeholders are filled by t(), e.g. t("out.scanning", count=3) with the text
-"Scanning {count} device(s)..." gives "Scanning 3 device(s)...".
+Placeholders are filled by t(), e.g. t("msg.quick_saved", count=3) with the text
+"Quick saved ({count} image(s))" gives "Quick saved (3 image(s))".
 
 The language is chosen in Settings > Language and saved in the config as
 "language"; it is used from the next start. Entries missing in a language fall
@@ -108,7 +108,7 @@ def t(key, **fields):
     """
     Text for a key in the active language.
 
-    @param key     entry name in the language file, e.g. "btn.scan_all"
+    @param key     entry name in the language file, e.g. "btn.fit"
     @param fields  values for the {placeholders} of the text
     @return        the text with the placeholders filled in; the key itself if
                    there is no such entry; the unfilled text if a placeholder

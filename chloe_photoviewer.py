@@ -5,44 +5,41 @@ chloe_photoviewer.py - Chloe Photoviewer, a small cross platform image viewer
 
     python chloe_photoviewer.py [image or folder]
 
+Every image opens as a tab of one window; the tab bar shows with two or more tabs.
+Each tab keeps its own zoom, position and rotation. Ctrl+N moves the current tab
+into a new window (with a single tab it opens an empty window). Windows do not
+share tabs or sessions.
+
 Mouse (FastStone style):
     click                    zoom to 100% at the clicked point; drag to move around
     click again              back to "fit to window"
-    click and hold           zoom to 200% while the button is down; moving the mouse
-                             over the fitted picture moves the zoomed view the same
-                             way (mouse at the bottom left of the picture = bottom
-                             left of the original); release returns to "fit"
-    wheel                    does nothing by default; Settings: previous / next image
+    click and hold           zoom to 200% while the button is down; the mouse position
+                             over the fitted picture picks the same relative spot of
+                             the zoomed one; release returns to "fit"
+    wheel                    nothing by default; Settings: previous / next image
                              (Ctrl + wheel = zoom) or zoom (Ctrl + wheel = previous / next)
-    right click              context menu (open with, open file location, copy path ...)
+    middle click on a tab    close the tab
+    right click              context menu
 
 Keys:
-    Left / Right / Space / BackSpace / PageUp / PageDown   previous / next
+    Left / Right / Space / BackSpace / PageUp / PageDown   previous / next image
     Home / End      first / last image          R / L   rotate right / left
     F               fit width / height          0       fit to window
-    1 / 2           100% / 200%
-    + / -           zoom in / out               I       show / hide info
-    F11             full screen (Esc leaves it)
-    F5              quick save of the open windows (session "Quick save (F5)")
-    Ctrl+O          open image                  Ctrl+,  settings
-    Ctrl+W          close (also Ctrl+Q)
+    1 / 2           100% / 200%                 + / -   zoom in / out
+    I               show / hide info            F11     full screen (Esc leaves it)
+    Ctrl+Tab        next tab (Shift: previous)  Ctrl+N  new window
+    Ctrl+O          open image(s)               Ctrl+,  settings
+    Ctrl+W          close tab                   Ctrl+Q  close window
+    F5              quick save: the tabs of this window (session "Quick save (F5)")
 
 Only one program process runs (Settings > General > single instance): starting it
-again sends the file to the running program, which opens it in a new window, and
-exits, so all windows share one Python / Tk / Pillow memory footprint.
+again sends the file to the running program, which opens it as a tab of the window
+used last, and exits.
 
-Rotating only changes how the picture is shown. No file is ever written or
-modified by this program.
+Rotating only changes how the picture is shown. No file is ever written or modified.
 
-Sessions: the images of all open windows can be saved (F5 = the session "Quick save (F5)",
-context menu > Session = named sessions) and opened again later. Sessions are
-managed in Settings > Sessions.
-
-Settings (Ctrl+, or the gear button) has the tabs General, Programs (the
-"Open with" list of the context menu), Sessions and Appearance (language and theme).
-Language and theme work like in the Firmware Manager: lang/<code>.json and
-theme/<code>.json next to this script, used from the next start (see
-chloe_lang.py and chloe_theme.py).
+Language and theme: lang/<code>.json and theme/<code>.json next to this script, used
+from the next start (see chloe_lang.py and chloe_theme.py).
 
 The config is saved per user:
     Windows  %APPDATA%\\ChloePhotoviewer\\chloe_photoviewer.json
@@ -62,10 +59,10 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Listener
 from tkinter import ttk, messagebox, filedialog
-import tkinter.font as tkfont
 
 try:
     from PIL import Image, ImageOps, ImageTk
@@ -73,7 +70,7 @@ except ImportError:
     sys.exit("Chloe Photoviewer needs Pillow:  pip install pillow\n"
              "(Debian/Ubuntu also:  sudo apt install python3-tk python3-pil.imagetk)")
 
-try:                                   # optional: drop an image on the window to open it
+try:                                   # optional: drop images on the window to open them
     import tkinterdnd2
 except ImportError:
     tkinterdnd2 = None
@@ -83,7 +80,7 @@ from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.5"
+VERSION = "1.6"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -91,11 +88,9 @@ IS_MAC = sys.platform == "darwin"
 IMAGE_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".bmp", ".dib",
               ".webp", ".tif", ".tiff", ".ico", ".ppm", ".pgm", ".pbm", ".tga",
               ".avif", ".heic", ".heif"}
-"""File extensions shown. What really opens depends on the installed Pillow
-(.heic / .avif need the pillow-heif plugin, see README)."""
+"""Extensions shown. What really opens depends on Pillow (.heic / .avif need pillow-heif)."""
 
-# Pillow 9.1 moved the constants into enums; support both.
-_TR = getattr(Image, "Transpose", Image)
+_TR = getattr(Image, "Transpose", Image)        # Pillow 9.1 moved the constants into enums
 _RS = getattr(Image, "Resampling", Image)
 ROTATE_CW = {1: _TR.ROTATE_270, 2: _TR.ROTATE_180, 3: _TR.ROTATE_90}
 """Quarter turns clockwise -> Pillow transpose constant."""
@@ -105,29 +100,29 @@ DRAG_PX = 4
 """Mouse movement (pixels) that turns a click into a drag."""
 
 CONFIG_NAME = "chloe_photoviewer.json"
-
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image", "icon.png")
-"""Program icon (square PNG, transparent background, 256 px or more). Missing = Tk default."""
+"""Program icon (square PNG, transparent, 256 px or more). Missing = Tk default."""
 
 INSTANCE_ADDR = ("127.0.0.1", 47615)
 """Local address the running viewer listens on; later launches send their file here."""
-
 INSTANCE_KEY = b"chloe-photoviewer"
 """Auth key of that connection (keeps other programs and other users out)."""
 
+QUICK_NAME = "Quick save (F5)"
+"""Name of the session F5 writes; it is a normal session (Settings > Sessions)."""
+
 DEFAULTS = {
-    "language": "", "theme": "", "apps": None,
-    "geometry": "1100x760", "zoomed": False,
+    "language": "", "theme": "", "apps": None, "geometry": "1100x760", "zoomed": False,
     "enlarge_small": False, "show_info": False, "toolbar": True,
-    "click_zoom": 100, "hold_zoom": 200, "hold_ms": 100,
-    "wheel": "none", "last_path": "", "cfg_version": 2,
-    "auto_rotate": "", "auto_dir": "cw", "single_instance": True,
-    "sessions": [], "quick_session": [],
+    "click_zoom": 100, "hold_zoom": 200, "hold_ms": 100, "wheel": "none",
+    "last_path": "", "auto_rotate": "", "auto_dir": "cw", "single_instance": True,
+    "sessions": [],
 }
-"""Config entries and their defaults ("apps": None = seed the open-with list;
-"wheel": none / navigate / zoom; "sessions": [{"name", "paths"}];
-"quick_session": unused, old F5 slot that is moved into "sessions" on load; F5 now
-writes the session named QUICK_NAME)."""
+"""Config entries and defaults ("apps": None = seed the open-with list;
+"wheel": none / navigate / zoom; "sessions": [{"name", "paths"}])."""
+
+RANGES = {"click_zoom": (10, 3200), "hold_zoom": (10, 3200), "hold_ms": (100, 2000)}
+"""Allowed (min, max) of the numeric settings."""
 
 
 # --------------------------------------------------------------------------- #
@@ -137,10 +132,9 @@ writes the session named QUICK_NAME)."""
 
 def detach_console():
     """
-    Windows: when started with python.exe (which opens a console window),
-    start the same program again with pythonw.exe (no console) and exit.
-    Set CHLOE_KEEP_CONSOLE=1 to keep the console, e.g. to read error messages.
-    Starting chloe_viewer.pyw never opens a console in the first place.
+    Windows: when started with python.exe (console window), start the same
+    program with pythonw.exe (no console) and exit. CHLOE_KEEP_CONSOLE=1 keeps
+    the console, e.g. to read error messages.
     """
     if not IS_WIN or os.environ.get("CHLOE_KEEP_CONSOLE"):
         return
@@ -156,25 +150,19 @@ def detach_console():
     sys.exit(0)
 
 
-def enable_hidpi():
-    """Windows: make the process DPI aware so the window is not blurry. Call before Tk()."""
+def win_setup():
+    """Windows: DPI aware (sharp window) and an own taskbar identity. Call before Tk()."""
     if not IS_WIN:
         return
+    import ctypes
     try:
-        import ctypes
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
             ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
-
-
-def set_app_id():
-    """Windows: own taskbar identity, so the taskbar shows our icon and not the Python one. Call before Tk()."""
-    if not IS_WIN: return
     try:
-        import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ChloePhotoviewer")
     except Exception:
         pass
@@ -198,34 +186,134 @@ def load_icons(root):
     return icons
 
 
-def config_dir():
-    """@return the per-user folder of the config file (platform specific)"""
-    if IS_WIN:
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        return os.path.join(base, "ChloePhotoviewer")
-    if IS_MAC:
-        return os.path.join(os.path.expanduser("~/Library/Application Support"),
-                            "ChloePhotoviewer")
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "chloe-photoviewer")
-
-
 def config_path():
-    """@return full path of the config file"""
-    return os.path.join(config_dir(), CONFIG_NAME)
+    """@return full path of the per-user config file (platform specific)"""
+    if IS_WIN:
+        base = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "ChloePhotoviewer")
+    elif IS_MAC:
+        base = os.path.expanduser("~/Library/Application Support/ChloePhotoviewer")
+    else:
+        base = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                            "chloe-photoviewer")
+    return os.path.join(base, CONFIG_NAME)
+
+
+def clamp_int(value, lo, hi, default):
+    """@return int(value) limited to lo..hi, or default if it is not a number"""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def default_apps():
+    """@return the "Open with" seed: well known editors that are installed, as {"name", "cmd"}"""
+    apps = []
+    if IS_WIN:
+        apps.append({"name": "Paint", "cmd": 'mspaint.exe "{file}"'})
+    elif IS_MAC:
+        apps.append({"name": "Preview", "cmd": 'open -a Preview "{file}"'})
+    for name, exe in (("GIMP", "gimp"), ("Krita", "krita"), ("Inkscape", "inkscape"),
+                      ("Darktable", "darktable"), ("Pinta", "pinta")):
+        if shutil.which(exe):
+            apps.append({"name": name, "cmd": '%s "{file}"' % exe})
+    return apps
+
+
+def clean_apps(apps):
+    """@return only the valid {"name", "cmd"} entries of a list read from the config"""
+    out = []
+    for a in apps if isinstance(apps, list) else []:
+        if isinstance(a, dict) and isinstance(a.get("name"), str) and isinstance(a.get("cmd"), str) \
+                and a["name"].strip() and a["cmd"].strip():
+            out.append({"name": a["name"].strip(), "cmd": a["cmd"].strip()})
+    return out
+
+
+def clean_sessions(sessions):
+    """@return only the valid {"name", "paths"} entries (unique names) of a list read from the config"""
+    out, seen = [], set()
+    for s in sessions if isinstance(sessions, list) else []:
+        if not (isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"].strip()):
+            continue
+        name = s["name"].strip()
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        paths = s.get("paths")
+        out.append({"name": name, "paths": [p for p in paths if isinstance(p, str) and p.strip()]
+                    if isinstance(paths, list) else []})
+    return out
+
+
+def upsert_session(sessions, name, paths):
+    """@return `sessions` with the entry called `name` (case-insensitive) replaced by the new one, last"""
+    out = [s for s in sessions if s["name"].lower() != name.lower()]
+    out.append({"name": name, "paths": list(paths)})
+    return out
+
+
+def default_session_name(paths):
+    """@return suggested session name: today's date + folder names, e.g. "2026-11-05 Holiday, Scans" """
+    folders = []
+    for p in paths:
+        name = os.path.basename(os.path.dirname(os.path.abspath(p)))
+        if name and name not in folders:
+            folders.append(name)
+    text = time.strftime("%Y-%m-%d")
+    if folders:
+        text += " " + ", ".join(folders[:3]) + (", ..." if len(folders) > 3 else "")
+    return text
+
+
+def load_config():
+    """@return the config dict: defaults, overridden by the saved file (values checked)"""
+    cfg = dict(DEFAULTS)
+    try:
+        with open(config_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, dict):
+        cfg.update({k: v for k, v in data.items() if k in DEFAULTS})
+    cfg["apps"] = default_apps() if cfg["apps"] is None else clean_apps(cfg["apps"])
+    cfg["sessions"] = clean_sessions(cfg["sessions"])
+    for key, (lo, hi) in RANGES.items():
+        cfg[key] = clamp_int(cfg[key], lo, hi, DEFAULTS[key])
+    for key, ok in (("wheel", ("none", "navigate", "zoom")), ("auto_rotate", ("", "landscape", "portrait")),
+                    ("auto_dir", ("cw", "ccw"))):
+        if cfg[key] not in ok:
+            cfg[key] = DEFAULTS[key]
+    for key in ("enlarge_small", "show_info", "toolbar", "zoomed", "single_instance"):
+        cfg[key] = bool(cfg[key])
+    for key in ("last_path", "geometry"):
+        if not isinstance(cfg[key], str):
+            cfg[key] = DEFAULTS[key]
+    return cfg
+
+
+def save_config(cfg, parent=None):
+    """Write the config (temporary file first); show an error box on failure."""
+    path = config_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(path + ".tmp", path)
+    except OSError as exc:
+        messagebox.showerror(t("dlg.error"), t("msg.save_failed", error=exc), parent=parent)
 
 
 def claim_instance(path):
     """
     Make this process the only viewer. The first process listens on a local
-    port; any later one sends its file to it and reports that it can exit, so
-    all images share one process (one Python / Tk / Pillow memory footprint).
-    Binding the port is the lock: nothing to clean up after a crash.
+    port; a later one sends its file to it. Binding the port is the lock, so
+    nothing needs cleaning up after a crash.
 
     @param path  image or folder of the command line, or None
     @return      (forwarded, listener): forwarded True = a running viewer got the
-                 path, exit now; listener = socket to serve, None if the port is
-                 not available (then run as a normal stand-alone window)
+                 path, exit now; listener None = port unavailable, run stand-alone
     """
     msg = os.path.abspath(path) if path else ""
     for _ in range(3):
@@ -242,113 +330,6 @@ def claim_instance(path):
     return False, None
 
 
-def clamp_int(value, lo, hi, default):
-    """@return int(value) limited to lo..hi, or default if it is not a number"""
-    try:
-        return max(lo, min(hi, int(value)))
-    except (TypeError, ValueError):
-        return default
-
-
-def default_apps():
-    """
-    Seed for the "Open with" list on the first start: well known editors that
-    are actually installed.
-
-    @return  list of {"name", "cmd"}
-    """
-    apps = []
-    if IS_WIN:
-        apps.append({"name": "Paint", "cmd": 'mspaint.exe "{file}"'})
-    elif IS_MAC:
-        apps.append({"name": "Preview", "cmd": 'open -a Preview "{file}"'})
-    for name, exe in (("GIMP", "gimp"), ("Krita", "krita"), ("Inkscape", "inkscape"),
-                      ("Darktable", "darktable"), ("Pinta", "pinta")):
-        if shutil.which(exe):
-            apps.append({"name": name, "cmd": '%s "{file}"' % exe})
-    return apps
-
-
-def clean_apps(apps):
-    """@return only the valid {"name", "cmd"} entries of a list read from the config"""
-    out = []
-    if isinstance(apps, list):
-        for a in apps:
-            if isinstance(a, dict) and isinstance(a.get("name"), str) \
-                    and isinstance(a.get("cmd"), str) and a["name"].strip() and a["cmd"].strip():
-                out.append({"name": a["name"].strip(), "cmd": a["cmd"].strip()})
-    return out
-
-
-def clean_paths(paths):
-    """@return only the non-empty strings of a list read from the config"""
-    if not isinstance(paths, list):
-        return []
-    return [p for p in paths if isinstance(p, str) and p.strip()]
-
-
-def clean_sessions(sessions):
-    """@return only the valid {"name", "paths"} entries (unique names) of a list read from the config"""
-    out, seen = [], set()
-    if isinstance(sessions, list):
-        for s in sessions:
-            if not (isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"].strip()):
-                continue
-            name = s["name"].strip()
-            if name.lower() in seen:
-                continue
-            seen.add(name.lower())
-            out.append({"name": name, "paths": clean_paths(s.get("paths"))})
-    return out
-
-
-QUICK_NAME = "Quick save (F5)"
-"""Name of the session that F5 writes; it is a normal session, so it shows up in
-Settings > Sessions and in the context menu > Session > Open session."""
-
-
-def set_quick_session(sessions, paths):
-    """
-    Store the F5 images as the session named QUICK_NAME (replaced if it exists).
-
-    @param sessions  list of {"name", "paths"}
-    @param paths     image paths to store
-    @return          new list in which the quick session is the last entry
-    """
-    out = [s for s in sessions if s["name"].lower() != QUICK_NAME.lower()]
-    out.append({"name": QUICK_NAME, "paths": list(paths)})
-    return out
-
-
-def get_quick_session(sessions):
-    """
-    @param sessions  list of {"name", "paths"}
-    @return          the image paths of the quick session, or [] if there is none
-    """
-    for s in sessions:
-        if s["name"].lower() == QUICK_NAME.lower():
-            return list(s["paths"])
-    return []
-
-
-def default_session_name(paths):
-    """
-    Suggested name of a new session: today's date plus the folder names.
-
-    @param paths  image paths of the session
-    @return       e.g. "2026-11-05 Holiday, Scans"
-    """
-    folders = []
-    for p in paths:
-        name = os.path.basename(os.path.dirname(os.path.abspath(p)))
-        if name and name not in folders:
-            folders.append(name)
-    text = time.strftime("%Y-%m-%d")
-    if folders:
-        text += " " + ", ".join(folders[:3]) + (", ..." if len(folders) > 3 else "")
-    return text
-
-
 def split_command(cmd):
     """
     Split a command line into arguments the way the platform does.
@@ -360,23 +341,23 @@ def split_command(cmd):
     cmd = cmd.strip()
     if not cmd:
         return []
-    if IS_WIN:
-        import ctypes
-        from ctypes import wintypes
-        fn = ctypes.windll.shell32.CommandLineToArgvW
-        fn.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
-        fn.restype = ctypes.POINTER(wintypes.LPWSTR)
-        count = ctypes.c_int(0)
-        ptr = fn(cmd, ctypes.byref(count))
-        if not ptr:
-            raise ValueError("CommandLineToArgvW failed")
-        try:
-            return [ptr[i] for i in range(count.value)]
-        finally:
-            free = ctypes.windll.kernel32.LocalFree
-            free.argtypes = [ctypes.c_void_p]
-            free(ptr)
-    return shlex.split(cmd)
+    if not IS_WIN:
+        return shlex.split(cmd)
+    import ctypes
+    from ctypes import wintypes
+    fn = ctypes.windll.shell32.CommandLineToArgvW
+    fn.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    fn.restype = ctypes.POINTER(wintypes.LPWSTR)
+    count = ctypes.c_int(0)
+    ptr = fn(cmd, ctypes.byref(count))
+    if not ptr:
+        raise ValueError("CommandLineToArgvW failed")
+    try:
+        return [ptr[i] for i in range(count.value)]
+    finally:
+        free = ctypes.windll.kernel32.LocalFree
+        free.argtypes = [ctypes.c_void_p]
+        free(ptr)
 
 
 def build_argv(cmd, path):
@@ -386,14 +367,13 @@ def build_argv(cmd, path):
     @param cmd   command with optional {file} and {dir} placeholders
     @param path  image path
     @return      argument list; the path is appended if the command has no {file}
-    @raise ValueError  if the command cannot be split
+    @raise ValueError  if the command is empty or cannot be split
     """
     parts = split_command(cmd)
     if not parts:
         raise ValueError("empty command")
-    has_file = any("{file}" in p for p in parts)
     argv = [p.replace("{file}", path).replace("{dir}", os.path.dirname(path)) for p in parts]
-    if not has_file:
+    if not any("{file}" in p for p in parts):
         argv.append(path)
     return argv
 
@@ -431,10 +411,16 @@ def size_text(num):
         value /= 1024
 
 
+def cascade(geometry):
+    """@return "WxH+X+Y" moved 30 px right and down, or None if it is not in that form"""
+    m = re.match(r"(\d+x\d+)\+(-?\d+)\+(-?\d+)$", geometry)
+    return "%s+%d+%d" % (m[1], int(m[2]) + 30, int(m[3]) + 30) if m else None
+
+
 def _select_in_explorer(path):
     """
-    Windows: open the folder of a file in Explorer with the file selected, using
-    the shell API (no command line quoting, so every file name works).
+    Windows: open the folder of a file in Explorer with the file selected, via the
+    shell API (no command line quoting, so every file name works).
 
     @param path  absolute path with backslashes
     @raise OSError  if the shell call fails
@@ -466,6 +452,7 @@ def reveal_in_folder(path):
     @raise OSError  if no file manager could be started
     """
     path = os.path.abspath(path)
+    quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if IS_WIN:
         try:
             _select_in_explorer(os.path.normpath(path))
@@ -477,17 +464,24 @@ def reveal_in_folder(path):
         try:
             from pathlib import Path
             done = subprocess.run(
-                ["dbus-send", "--session", "--print-reply",
-                 "--dest=org.freedesktop.FileManager1", "--type=method_call",
-                 "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems",
-                 "array:string:" + Path(path).as_uri(), "string:"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+                ["dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.FileManager1",
+                 "--type=method_call", "/org/freedesktop/FileManager1",
+                 "org.freedesktop.FileManager1.ShowItems",
+                 "array:string:" + Path(path).as_uri(), "string:"], timeout=4, **quiet)
             if done.returncode == 0:
                 return
         except (OSError, subprocess.TimeoutExpired):
             pass
-        subprocess.Popen(["xdg-open", os.path.dirname(path)], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["xdg-open", os.path.dirname(path)], start_new_session=True, **quiet)
+
+
+def pick_images(parent, initialdir=None):
+    """@return the absolute paths picked in the system "open images" dialog (maybe empty)"""
+    picked = filedialog.askopenfilenames(
+        parent=parent, title=t("dlg.open"), initialdir=initialdir or None,
+        filetypes=[(t("filetype.images"), " ".join("*" + e for e in sorted(IMAGE_EXTS))),
+                   (t("filetype.all"), "*.*")])
+    return [os.path.abspath(p) for p in parent.tk.splitlist(picked)]
 
 
 class Tip:
@@ -508,9 +502,8 @@ class Tip:
         self.win = tk.Toplevel(self.widget)
         self.win.wm_overrideredirect(True)
         tk.Label(self.win, text=t(self.key), relief="solid", bd=1, padx=5, pady=2).pack()
-        x = self.widget.winfo_rootx()
-        y = self.widget.winfo_rooty() - 30
-        self.win.wm_geometry("+%d+%d" % (x, max(y, 0)))
+        self.win.wm_geometry("+%d+%d" % (self.widget.winfo_rootx(),
+                                         max(self.widget.winfo_rooty() - 30, 0)))
 
     def _hide(self, _event=None):
         if self.job:
@@ -537,60 +530,162 @@ def shorten_middle(text, font, width):
     """
     if width <= 0 or font.measure(text) <= width:
         return text
+
+    def cut(keep):
+        head = (keep + 1) // 2
+        return text[:head] + "..." + text[len(text) - (keep - head):]
+
     lo, hi = 0, len(text)
     while lo < hi:
-        keep = (lo + hi + 1) // 2
-        head = (keep + 1) // 2
-        cand = text[:head] + "..." + text[len(text) - (keep - head):]
-        if font.measure(cand) <= width:
-            lo = keep
+        mid = (lo + hi + 1) // 2
+        if font.measure(cut(mid)) <= width:
+            lo = mid
         else:
-            hi = keep - 1
-    head = (lo + 1) // 2
-    return text[:head] + "..." + text[len(text) - (lo - head):]
+            hi = mid - 1
+    return cut(lo)
 
 
 def center_on(win, parent):
     """Place a dialog in the middle of its parent window."""
     win.update_idletasks()
-    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-    x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
-    y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
+    x = parent.winfo_rootx() + (parent.winfo_width() - win.winfo_reqwidth()) // 2
+    y = parent.winfo_rooty() + (parent.winfo_height() - win.winfo_reqheight()) // 2
     win.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
 
 
-def make_modal(win):
-    """Grab input for a dialog (when it is visible) and wait until it closes."""
-    try:
-        win.wait_visibility()
-        win.grab_set()
-    except tk.TclError:
-        pass
-    win.focus_set()
-    win.wait_window(win)
+def ok_cancel(parent, ok, cancel):
+    """@return a frame (not yet placed) with the OK and Cancel buttons at its right edge"""
+    row = ttk.Frame(parent)
+    ttk.Button(row, text=t("btn.cancel"), command=cancel).pack(side="right")
+    ttk.Button(row, text=t("btn.ok"), command=ok).pack(side="right", padx=3)
+    return row
 
 
-class AppDialog(tk.Toplevel):
-    """
-    Add / edit one "Open with" program (name + command).
-    After wait_window(), .result is {"name", "cmd"} or None if cancelled.
-    """
+class Dialog(tk.Toplevel):
+    """Modal dialog base. Build the widgets, then call show(); .result is None if cancelled."""
+
+    def __init__(self, parent, title_key):
+        super().__init__(parent)
+        self.withdraw()
+        self.title(t(title_key))
+        self.transient(parent)
+        self.parent, self.result = parent, None
+
+    def show(self, focus=None, ok=None):
+        """
+        Center, show and wait until the dialog closes.
+
+        @param focus  widget to focus first
+        @param ok     function for the Return key
+        """
+        if ok:
+            self.bind("<Return>", lambda e: ok())
+        for seq in ("<Escape>", "<Control-w>", "<Control-W>"):
+            self.bind(seq, lambda e: self.destroy())
+        center_on(self, self.parent)
+        self.deiconify()
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass
+        (focus or self).focus_set()
+        self.wait_window(self)
+
+
+class ListBox(ttk.Frame):
+    """A table with Add / Edit / Remove / Up / Down buttons that edits the list `items` in place."""
+
+    def __init__(self, parent, items, cols, row, add, edit=None, confirm=None, add_key="btn.add"):
+        """
+        @param items    the list to edit (changed in place)
+        @param cols     [(heading key, width, stretch)]
+        @param row      item -> tuple of cell texts
+        @param add      () -> list of new items (empty = nothing added)
+        @param edit     index -> replacement item or None; None = no Edit button
+        @param confirm  language key asked (with {count}) before removing; None = no question
+        @param add_key  language key of the Add button
+        Call refresh() once the owner is ready to deliver rows.
+        """
+        super().__init__(parent)
+        self.items, self.row, self.confirm, self._add, self._edit = items, row, confirm, add, edit
+        side = ttk.Frame(self)
+        side.pack(side="right", fill="y", padx=(10, 0))
+        buttons = [(add_key, self.add)] + ([("btn.edit", self.edit)] if edit else []) + [
+            ("btn.remove", self.remove), ("btn.up", lambda: self.move(-1)),
+            ("btn.down", lambda: self.move(1))]
+        for key, cmd in buttons:
+            ttk.Button(side, text=t(key), command=cmd).pack(fill="x", pady=2)
+        box = ttk.Frame(self)
+        box.pack(side="left", fill="both", expand=True)
+        ids = [str(i) for i in range(len(cols))]
+        self.tree = ttk.Treeview(box, columns=ids, show="headings", height=10, selectmode="extended")
+        for cid, (key, width, stretch) in zip(ids, cols):
+            self.tree.heading(cid, text=t(key), anchor="w")
+            self.tree.column(cid, width=width, stretch=stretch)
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        if edit:
+            self.tree.bind("<Double-1>", lambda e: self.edit())
+
+    def selected(self):
+        """@return the selected indexes, ascending"""
+        return sorted(int(i) for i in self.tree.selection())
+
+    def refresh(self, select=()):
+        """Show the items; `select` = indexes to select afterwards."""
+        self.tree.delete(*self.tree.get_children())
+        for i, item in enumerate(self.items):
+            self.tree.insert("", "end", iid=str(i), values=self.row(item))
+        for i in select:
+            if 0 <= i < len(self.items):
+                self.tree.selection_add(str(i))
+
+    def add(self):
+        new = self._add()
+        if new:
+            first = len(self.items)
+            self.items.extend(new)
+            self.refresh(range(first, len(self.items)))
+
+    def edit(self):
+        sel = self.selected()
+        new = self._edit(sel[0]) if sel else None
+        if new:
+            self.items[sel[0]] = new
+            self.refresh([sel[0]])
+
+    def remove(self):
+        sel = self.selected()
+        if sel and (not self.confirm or messagebox.askyesno(
+                t("dlg.remove"), t(self.confirm, count=len(sel)), parent=self)):
+            self.items[:] = [x for i, x in enumerate(self.items) if i not in sel]
+            self.refresh()
+
+    def move(self, step):
+        """Move the selected rows up (-1) or down (+1)."""
+        sel = self.selected()
+        if not sel or sel[0] + step < 0 or sel[-1] + step >= len(self.items):
+            return
+        for i in (sel if step < 0 else sel[::-1]):
+            self.items[i], self.items[i + step] = self.items[i + step], self.items[i]
+        self.refresh([i + step for i in sel])
+
+
+class AppDialog(Dialog):
+    """Add / edit one "Open with" program; .result = {"name", "cmd"} or None."""
 
     def __init__(self, parent, app=None, taken=()):
         """
-        @param parent  owner window
-        @param app     {"name", "cmd"} to edit, or None to add
-        @param taken   names already used by the other programs
+        @param app    {"name", "cmd"} to edit, or None to add
+        @param taken  names used by the other programs
         """
-        super().__init__(parent)
-        self.withdraw()
-        self.title(t("dlg.edit_app" if app else "dlg.add_app"))
-        self.transient(parent)
-        self.result = None
+        super().__init__(parent, "dlg.edit_app" if app else "dlg.add_app")
         self.taken = {n.lower() for n in taken}
         self.name_var = tk.StringVar(value=app["name"] if app else "")
         self.cmd_var = tk.StringVar(value=app["cmd"] if app else "")
-
         frm = ttk.Frame(self, padding=12)
         frm.pack(fill="both", expand=True)
         frm.columnconfigure(1, weight=1)
@@ -598,23 +693,12 @@ class AppDialog(tk.Toplevel):
         name = ttk.Entry(frm, textvariable=self.name_var, width=56)
         name.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0))
         ttk.Label(frm, text=t("field.cmd")).grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(frm, textvariable=self.cmd_var, width=56).grid(
-            row=1, column=1, sticky="ew", padx=(8, 0))
+        ttk.Entry(frm, textvariable=self.cmd_var, width=56).grid(row=1, column=1, sticky="ew", padx=(8, 0))
         ttk.Button(frm, text=t("btn.pick"), command=self._pick).grid(row=1, column=2, padx=(6, 0))
         ttk.Label(frm, text=t("hint.app_cmd"), wraplength=480, justify="left").grid(
             row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        btns = ttk.Frame(frm)
-        btns.grid(row=3, column=0, columnspan=3, sticky="e", pady=(12, 0))
-        ttk.Button(btns, text=t("btn.ok"), command=self._ok).pack(side="left", padx=3)
-        ttk.Button(btns, text=t("btn.cancel"), command=self.destroy).pack(side="left")
-
-        self.bind("<Return>", lambda e: self._ok())
-        for seq in ("<Escape>", "<Control-w>", "<Control-W>"):
-            self.bind(seq, lambda e: self.destroy())
-        center_on(self, parent)
-        self.deiconify()
-        name.focus_set()
-        make_modal(self)
+        ok_cancel(frm, self._ok, self.destroy).grid(row=3, column=0, columnspan=3, sticky="e", pady=(12, 0))
+        self.show(name, self._ok)
 
     def _pick(self):
         """Choose a program file; the command becomes: "<program>" "{file}"."""
@@ -625,158 +709,75 @@ class AppDialog(tk.Toplevel):
                 self.name_var.set(os.path.splitext(os.path.basename(path))[0])
 
     def _ok(self):
-        """Validate, then close with the result."""
         name, cmd = self.name_var.get().strip(), self.cmd_var.get().strip()
-        if not name:
-            messagebox.showerror(t("dlg.error"), t("msg.name_required"), parent=self)
-            return
-        if not cmd:
-            messagebox.showerror(t("dlg.error"), t("msg.cmd_required"), parent=self)
-            return
-        if name.lower() in self.taken:
-            messagebox.showerror(t("dlg.error"), t("msg.name_exists"), parent=self)
-            return
         try:
-            if not split_command(cmd):
+            if not name:
+                raise ValueError(t("msg.name_required"))
+            if not cmd:
                 raise ValueError(t("msg.cmd_required"))
+            if name.lower() in self.taken:
+                raise ValueError(t("msg.name_exists"))
+            split_command(cmd)
         except ValueError as exc:
-            messagebox.showerror(t("dlg.error"), t("msg.bad_command", error=exc), parent=self)
+            messagebox.showerror(t("dlg.error"), str(exc), parent=self)
             return
         self.result = {"name": name, "cmd": cmd}
         self.destroy()
 
 
-class SessionDialog(tk.Toplevel):
-    """
-    Create / edit one session: a name and a list of images (one window each).
-    After wait_window(), .result is {"name", "paths"} or None if cancelled.
-    """
+class SessionDialog(Dialog):
+    """Create / edit one session (a name and a list of images); .result = {"name", "paths"} or None."""
 
     def __init__(self, parent, session=None, paths=None, taken=(), overwrite=False):
         """
-        @param parent     owner window
         @param session    {"name", "paths"} to edit, or None for a new one
-        @param paths      images of a new session (e.g. the open windows)
+        @param paths      images of a new session (the tabs of the window)
         @param taken      names of the other sessions
-        @param overwrite  True = an existing name may be replaced after asking;
-                          False = an existing name is an error
+        @param overwrite  True = an existing name may be replaced after asking; False = error
         """
-        super().__init__(parent)
-        self.withdraw()
-        self.title(t("dlg.edit_session" if session else "dlg.add_session"))
-        self.transient(parent)
-        self.result = None
-        self.taken = {n.lower() for n in taken}
-        self.overwrite = overwrite
-        self.paths = list(session["paths"] if session else (paths or []))
-        default = session["name"] if session else default_session_name(self.paths)
-        self.name_var = tk.StringVar(value=default)
-
+        super().__init__(parent, "dlg.edit_session" if session else "dlg.add_session")
+        self.taken, self.overwrite = {n.lower() for n in taken}, overwrite
+        items = list(session["paths"] if session else paths or [])
+        self.name_var = tk.StringVar(value=session["name"] if session else default_session_name(items))
+        self.font = tkfont.nametofont("TkDefaultFont")
         frm = ttk.Frame(self, padding=12)
         frm.pack(fill="both", expand=True)
-        frm.columnconfigure(0, weight=1)
-        frm.rowconfigure(1, weight=1)
         top = ttk.Frame(frm)
-        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        top.pack(fill="x", pady=(0, 8))
         top.columnconfigure(1, weight=1)
         ttk.Label(top, text=t("field.name")).grid(row=0, column=0, sticky="w")
         name = ttk.Entry(top, textvariable=self.name_var, width=56)
         name.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-
-        box = ttk.Frame(frm)
-        box.grid(row=1, column=0, sticky="nsew")
-        self.tree = ttk.Treeview(box, columns=("path",), show="headings",
-                                 height=10, selectmode="extended")
-        self.tree.heading("path", text=t("prop.path"), anchor="w")
-        self.tree.column("path", width=560, stretch=True)
-        self.tree_font = tkfont.nametofont("TkDefaultFont")
-        self.tree.bind("<Configure>", lambda e: self._fill(self._selected()))
-        sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.tree.pack(side="left", fill="both", expand=True)
-        side = ttk.Frame(frm)
-        side.grid(row=1, column=1, sticky="n", padx=(10, 0))
-        for key, cmd in (("btn.add_images", self._add), ("btn.remove", self._remove),
-                         ("btn.up", lambda: self._move(-1)), ("btn.down", lambda: self._move(1))):
-            ttk.Button(side, text=t(key), command=cmd).pack(fill="x", pady=2)
-        btns = ttk.Frame(frm)
-        btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(btns, text=t("btn.ok"), command=self._ok).pack(side="left", padx=3)
-        ttk.Button(btns, text=t("btn.cancel"), command=self.destroy).pack(side="left")
-
-        self._fill()
-        self.bind("<Return>", lambda e: self._ok())
-        for seq in ("<Escape>", "<Control-w>", "<Control-W>"):
-            self.bind(seq, lambda e: self.destroy())
-        center_on(self, parent)
-        self.deiconify()
-        name.focus_set()
+        self.box = ListBox(frm, items, [("prop.path", 560, True)], self._row, self._add,
+                           add_key="btn.add_images")
+        self.box.pack(fill="both", expand=True)
+        self.box.tree.bind("<Configure>", lambda e: self.box.refresh(self.box.selected()))
+        self.box.refresh()
+        ok_cancel(frm, self._ok, self.destroy).pack(fill="x", pady=(12, 0))
         name.selection_range(0, "end")
-        make_modal(self)
+        self.show(name, self._ok)
 
-    def _fill(self, select=()):
-        """
-        Show the full path of every image of self.paths in the list; a path that
-        is too long for the column is shortened in the middle with "...".
-
-        @param select  indexes to select afterwards
-        """
-        width = self.tree.column("path", "width") - 16
-        self.tree.delete(*self.tree.get_children())
-        for i, p in enumerate(self.paths):
-            suffix = "" if os.path.isfile(p) else "  (%s)" % t("val.missing")
-            room = width - self.tree_font.measure(suffix)
-            self.tree.insert("", "end", iid=str(i),
-                             values=(shorten_middle(p, self.tree_font, room) + suffix,))
-        for i in select:
-            if 0 <= i < len(self.paths):
-                self.tree.selection_add(str(i))
-
-    def _selected(self):
-        """@return the selected indexes, ascending"""
-        return sorted(int(i) for i in self.tree.selection())
+    def _row(self, path):
+        """Full path, shortened in the middle if the column is too narrow; "(missing)" if gone."""
+        suffix = "" if os.path.isfile(path) else "  (%s)" % t("val.missing")
+        room = self.box.tree.column("0", "width") - 16 - self.font.measure(suffix)
+        return (shorten_middle(path, self.font, room) + suffix,)
 
     def _add(self):
-        """Add images picked with the system dialog."""
-        pats = " ".join("*" + e for e in sorted(IMAGE_EXTS))
-        picked = filedialog.askopenfilenames(
-            parent=self, title=t("dlg.open"),
-            filetypes=[(t("filetype.images"), pats), (t("filetype.all"), "*.*")])
-        if isinstance(picked, str):
-            picked = self.tk.splitlist(picked)
-        have = [os.path.normcase(p) for p in self.paths]
-        first = len(self.paths)
-        for p in picked:
-            p = os.path.abspath(p)
+        have = {os.path.normcase(p) for p in self.box.items}
+        new = []
+        for p in pick_images(self):
             if os.path.normcase(p) not in have:
-                self.paths.append(p)
-                have.append(os.path.normcase(p))
-        self._fill(range(first, len(self.paths)))
-
-    def _remove(self):
-        """Remove the selected images from the session."""
-        sel = self._selected()
-        self.paths = [p for i, p in enumerate(self.paths) if i not in sel]
-        self._fill()
-
-    def _move(self, step):
-        """Move the selected images up (-1) or down (+1)."""
-        sel = self._selected()
-        if not sel or sel[0] + step < 0 or sel[-1] + step >= len(self.paths):
-            return
-        for i in (sel if step < 0 else sel[::-1]):
-            self.paths[i], self.paths[i + step] = self.paths[i + step], self.paths[i]
-        self._fill([i + step for i in sel])
+                have.add(os.path.normcase(p))
+                new.append(p)
+        return new
 
     def _ok(self):
-        """Validate, then close with the result."""
         name = self.name_var.get().strip()
-        if not name:
-            messagebox.showerror(t("dlg.error"), t("msg.name_required"), parent=self)
-            return
-        if not self.paths:
-            messagebox.showerror(t("dlg.error"), t("msg.session_no_images"), parent=self)
+        if not name or not self.box.items:
+            messagebox.showerror(t("dlg.error"),
+                                 t("msg.name_required" if not name else "msg.session_no_images"),
+                                 parent=self)
             return
         if name.lower() in self.taken:
             if not self.overwrite:
@@ -785,37 +786,28 @@ class SessionDialog(tk.Toplevel):
             if not messagebox.askyesno(t("dlg.session_overwrite"),
                                        t("msg.session_overwrite", name=name), parent=self):
                 return
-        self.result = {"name": name, "paths": list(self.paths)}
+        self.result = {"name": name, "paths": list(self.box.items)}
         self.destroy()
 
 
-class SettingsDialog(tk.Toplevel):
+class SettingsDialog(Dialog):
     """
     Settings window with the tabs General, Programs, Sessions, Appearance and About.
-    OK writes everything to the app config (and saves it); Cancel drops it.
+    OK writes everything to the config (and saves it); Cancel drops it.
     """
 
     def __init__(self, app, tab=0):
         """
-        @param app  the main window (App)
+        @param app  the Window that opened it
         @param tab  tab to show first: 0 General, 1 Programs, 2 Sessions, 3 Appearance, 4 About
         """
-        super().__init__(app)
-        self.withdraw()
-        self.app = app
-        self.title(t("dlg.settings"))
-        self.transient(app)
-        cfg = app.cfg
+        super().__init__(app, "dlg.settings")
+        self.app, cfg = app, app.cfg
         self.apps = [dict(a) for a in cfg["apps"]]
         self.sessions = [{"name": s["name"], "paths": list(s["paths"])} for s in cfg["sessions"]]
-        self.theme_code = cfg["theme"]
-
         frm = ttk.Frame(self, padding=10)
         frm.pack(fill="both", expand=True)
-        btns = ttk.Frame(frm)
-        btns.pack(side="bottom", fill="x", pady=(10, 0))
-        ttk.Button(btns, text=t("btn.cancel"), command=self.destroy).pack(side="right")
-        ttk.Button(btns, text=t("btn.ok"), command=self._ok).pack(side="right", padx=3)
+        ok_cancel(frm, self._ok, self.destroy).pack(side="bottom", fill="x", pady=(10, 0))
         self.nb = ttk.Notebook(frm)
         self.nb.pack(fill="both", expand=True)
         self._tab_general(cfg)
@@ -824,64 +816,114 @@ class SettingsDialog(tk.Toplevel):
         self._tab_appearance(cfg)
         self._tab_about()
         self.nb.select(tab)
+        self.show()
 
-        self.bind("<Escape>", lambda e: self.destroy())
-        for seq in ("<Control-w>", "<Control-W>"):
-            self.bind(seq, lambda e: self.destroy())
-        center_on(self, app)
-        self.deiconify()
-        make_modal(self)
-
-    # -- General ------------------------------------------------------------ #
+    def _page(self, key, padding=14):
+        """@return a new tab page of the notebook"""
+        page = ttk.Frame(self.nb, padding=padding)
+        self.nb.add(page, text=t(key))
+        return page
 
     def _tab_general(self, cfg):
-        """Zoom behavior, wheel, on-screen options."""
-        page = ttk.Frame(self.nb, padding=14)
-        self.nb.add(page, text=t("tab.general"))
-        self.v_enlarge = tk.BooleanVar(value=cfg["enlarge_small"])
-        self.v_info = tk.BooleanVar(value=cfg["show_info"])
-        self.v_toolbar = tk.BooleanVar(value=cfg["toolbar"])
-        self.v_single = tk.BooleanVar(value=cfg["single_instance"])
-        self.v_click = tk.StringVar(value=str(cfg["click_zoom"]))
-        self.v_hold = tk.StringVar(value=str(cfg["hold_zoom"]))
-        self.v_ms = tk.StringVar(value=str(cfg["hold_ms"]))
-        self.v_wheel = tk.StringVar(value=cfg["wheel"])
-        for var, key in ((self.v_enlarge, "opt.enlarge_small"), (self.v_info, "opt.show_info"),
-                         (self.v_toolbar, "opt.show_toolbar"),
-                         (self.v_single, "opt.single_instance")):
-            ttk.Checkbutton(page, text=t(key), variable=var).pack(anchor="w", pady=2)
+        page = self._page("tab.general")
+        self.flags = {k: tk.BooleanVar(value=cfg[k]) for k in
+                      ("enlarge_small", "show_info", "toolbar", "single_instance")}
+        for key, text in (("enlarge_small", "opt.enlarge_small"), ("show_info", "opt.show_info"),
+                          ("toolbar", "opt.show_toolbar"), ("single_instance", "opt.single_instance")):
+            ttk.Checkbutton(page, text=t(text), variable=self.flags[key]).pack(anchor="w", pady=2)
         grid = ttk.Frame(page)
         grid.pack(anchor="w", pady=(12, 0))
-        for row, (key, var, lo, hi, step) in enumerate((
-                ("field.click_zoom", self.v_click, 10, 3200, 25),
-                ("field.hold_zoom", self.v_hold, 10, 3200, 25),
-                ("field.hold_ms", self.v_ms, 100, 2000, 50))):
-            ttk.Label(grid, text=t(key)).grid(row=row, column=0, sticky="w", pady=4)
-            ttk.Spinbox(grid, textvariable=var, from_=lo, to=hi, increment=step,
-                        width=8).grid(row=row, column=1, padx=(12, 0))
+        self.nums = {k: tk.StringVar(value=str(cfg[k])) for k in RANGES}
+        for row, (key, (lo, hi)) in enumerate(RANGES.items()):
+            ttk.Label(grid, text=t("field." + key)).grid(row=row, column=0, sticky="w", pady=4)
+            ttk.Spinbox(grid, textvariable=self.nums[key], from_=lo, to=hi, width=8,
+                        increment=50 if key == "hold_ms" else 25).grid(row=row, column=1, padx=(12, 0))
+        self.wheel = tk.StringVar(value=cfg["wheel"])
         ttk.Label(page, text=t("field.wheel")).pack(anchor="w", pady=(12, 2))
-        ttk.Radiobutton(page, text=t("opt.wheel_none"), value="none",
-                        variable=self.v_wheel).pack(anchor="w")
-        ttk.Radiobutton(page, text=t("opt.wheel_navigate"), value="navigate",
-                        variable=self.v_wheel).pack(anchor="w")
-        ttk.Radiobutton(page, text=t("opt.wheel_zoom"), value="zoom",
-                        variable=self.v_wheel).pack(anchor="w")
+        for text, value in (("opt.wheel_none", "none"), ("opt.wheel_navigate", "navigate"),
+                            ("opt.wheel_zoom", "zoom")):
+            ttk.Radiobutton(page, text=t(text), value=value, variable=self.wheel).pack(anchor="w")
 
-    # -- About -------------------------------------------------------------- #
+    def _tab_programs(self):
+        page = self._page("tab.programs", 10)
+        self.prog = ListBox(page, self.apps,
+                            [("col.app.name", 150, False), ("col.app.cmd", 380, True)],
+                            lambda a: (a["name"], a["cmd"]), self._app_add, self._app_edit,
+                            "msg.remove_apps")
+        self.prog.pack(fill="both", expand=True)
+        self.prog.refresh()
+
+    def _app_add(self):
+        dlg = AppDialog(self, None, [a["name"] for a in self.apps])
+        return [dlg.result] if dlg.result else []
+
+    def _app_edit(self, i):
+        taken = [a["name"] for j, a in enumerate(self.apps) if j != i]
+        return AppDialog(self, self.apps[i], taken).result
+
+    def _tab_sessions(self):
+        page = self._page("tab.sessions", 10)
+        self.sess = ListBox(page, self.sessions,
+                            [("col.session.name", 380, True), ("col.session.count", 90, False)],
+                            lambda s: (s["name"], len(s["paths"])), self._session_add,
+                            self._session_edit, "msg.remove_sessions")
+        self.sess.pack(fill="both", expand=True)
+        self.sess.refresh()
+
+    def _session_add(self):
+        dlg = SessionDialog(self, None, self.app.paths(), [s["name"] for s in self.sessions])
+        return [dlg.result] if dlg.result else []
+
+    def _session_edit(self, i):
+        taken = [s["name"] for j, s in enumerate(self.sessions) if j != i]
+        return SessionDialog(self, self.sessions[i], taken=taken).result
+
+    def _tab_appearance(self, cfg):
+        page = self._page("tab.appearance")
+        page.columnconfigure(1, weight=1)
+        self.langs = list_languages()
+        self.lang_var, self.theme_var = tk.StringVar(), tk.StringVar()
+        ttk.Label(page, text=t("field.language")).grid(row=0, column=0, sticky="w", pady=6)
+        self.lang_box = ttk.Combobox(page, textvariable=self.lang_var, state="readonly", width=30,
+                                     values=[n for _c, n in self.langs])
+        self.lang_box.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        names = dict(self.langs)
+        self.lang_var.set(names.get(cfg["language"], names.get("en", cfg["language"])))
+        ttk.Label(page, text=t("field.theme")).grid(row=1, column=0, sticky="w", pady=6)
+        self.theme_box = ttk.Combobox(page, textvariable=self.theme_var, state="readonly", width=30)
+        self.theme_box.grid(row=1, column=1, sticky="w", padx=(12, 0))
+        ttk.Button(page, text=t("btn.theme_edit"), command=self._edit_theme).grid(
+            row=2, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
+        self._show_themes(cfg["theme"])
+
+    def _show_themes(self, code):
+        """Fill the theme box and select the theme with this code."""
+        self.themes = list_themes()
+        self.theme_box.configure(values=[n for _c, n in self.themes])
+        self.theme_var.set(dict(self.themes).get(code, code))
+
+    def _picked(self, box, items, default):
+        """@return the code chosen in a combobox, or `default` if nothing matches"""
+        i = box.current()
+        return items[i][0] if 0 <= i < len(items) else default
+
+    def _edit_theme(self):
+        """Open the theme editor and select the theme it saved."""
+        code = self._picked(self.theme_box, self.themes, self.app.cfg["theme"])
+        dlg = ThemeDialog(self, code)
+        if dlg.result:
+            self._show_themes(dlg.result)
 
     def _tab_about(self):
-        """Program name, version and the versions it runs on."""
         import PIL
-        page = ttk.Frame(self.nb, padding=14)
-        self.nb.add(page, text=t("tab.about"))
+        page = self._page("tab.about")
         ttk.Label(page, text="%s %s" % (APP_NAME, VERSION),
                   font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
-        ttk.Label(page, text=t("about.description"), wraplength=380,
-                  justify="left").pack(anchor="w", pady=(4, 12))
+        ttk.Label(page, text=t("about.description"), wraplength=380, justify="left").pack(
+            anchor="w", pady=(4, 12))
         grid = ttk.Frame(page)
         grid.pack(anchor="w")
-        rows = ((t("about.python"), sys.version.split()[0]),
-                (t("about.pillow"), PIL.__version__),
+        rows = ((t("about.python"), sys.version.split()[0]), (t("about.pillow"), PIL.__version__),
                 (t("about.tk"), str(tk.TkVersion)),
                 (t("about.dnd"), t("about.dnd_on") if self.app.dnd_ok else t("about.dnd_off")),
                 (t("about.config"), config_path()))
@@ -890,416 +932,212 @@ class SettingsDialog(tk.Toplevel):
             ttk.Label(grid, text=value, wraplength=300, justify="left").grid(
                 row=row, column=1, sticky="w", padx=(12, 0), pady=2)
 
-    # -- Programs ----------------------------------------------------------- #
-
-    def _tab_programs(self):
-        """The list behind Open with in the context menu."""
-        page = ttk.Frame(self.nb, padding=10)
-        self.nb.add(page, text=t("tab.programs"))
-        side = ttk.Frame(page)
-        side.pack(side="right", fill="y", padx=(10, 0))
-        for key, cmd in (("btn.add", self._add), ("btn.edit", self._edit),
-                         ("btn.remove", self._remove), ("btn.up", lambda: self._move(-1)),
-                         ("btn.down", lambda: self._move(1))):
-            ttk.Button(side, text=t(key), command=cmd).pack(fill="x", pady=2)
-        box = ttk.Frame(page)
-        box.pack(side="left", fill="both", expand=True)
-        self.tree = ttk.Treeview(box, columns=("name", "cmd"), show="headings",
-                                 height=10, selectmode="extended")
-        self.tree.heading("name", text=t("col.app.name"), anchor="w")
-        self.tree.heading("cmd", text=t("col.app.cmd"), anchor="w")
-        self.tree.column("name", width=150, stretch=False)
-        self.tree.column("cmd", width=380)
-        sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<Double-1>", lambda e: self._edit())
-        self._fill_apps()
-
-    def _fill_apps(self, select=()):
-        """Show self.apps in the list; `select` = indexes to select afterwards."""
-        self.tree.delete(*self.tree.get_children())
-        for i, a in enumerate(self.apps):
-            self.tree.insert("", "end", iid=str(i), values=(a["name"], a["cmd"]))
-        for i in select:
-            if 0 <= i < len(self.apps):
-                self.tree.selection_add(str(i))
-
-    def _selected(self):
-        """@return the selected indexes, ascending"""
-        return sorted(int(i) for i in self.tree.selection())
-
-    def _add(self):
-        """Add a program."""
-        dlg = AppDialog(self, None, [a["name"] for a in self.apps])
-        if dlg.result:
-            self.apps.append(dlg.result)
-            self._fill_apps([len(self.apps) - 1])
-
-    def _edit(self):
-        """Edit the first selected program."""
-        sel = self._selected()
-        if not sel:
-            return
-        i = sel[0]
-        taken = [a["name"] for j, a in enumerate(self.apps) if j != i]
-        dlg = AppDialog(self, self.apps[i], taken)
-        if dlg.result:
-            self.apps[i] = dlg.result
-            self._fill_apps([i])
-
-    def _remove(self):
-        """Remove the selected programs (after asking)."""
-        sel = self._selected()
-        if sel and messagebox.askyesno(t("dlg.remove"), t("msg.remove_apps", count=len(sel)),
-                                       parent=self):
-            self.apps = [a for i, a in enumerate(self.apps) if i not in sel]
-            self._fill_apps()
-
-    def _move(self, step):
-        """Move the selected programs up (-1) or down (+1)."""
-        sel = self._selected()
-        if not sel or sel[0] + step < 0 or sel[-1] + step >= len(self.apps):
-            return
-        order = sel if step < 0 else sel[::-1]
-        for i in order:
-            self.apps[i], self.apps[i + step] = self.apps[i + step], self.apps[i]
-        self._fill_apps([i + step for i in sel])
-
-    # -- Sessions ----------------------------------------------------------- #
-
-    def _tab_sessions(self):
-        """The saved sessions (opened from the context menu > Session)."""
-        page = ttk.Frame(self.nb, padding=10)
-        self.nb.add(page, text=t("tab.sessions"))
-        side = ttk.Frame(page)
-        side.pack(side="right", fill="y", padx=(10, 0))
-        for key, cmd in (("btn.add", self._s_add), ("btn.edit", self._s_edit),
-                         ("btn.remove", self._s_remove), ("btn.up", lambda: self._s_move(-1)),
-                         ("btn.down", lambda: self._s_move(1))):
-            ttk.Button(side, text=t(key), command=cmd).pack(fill="x", pady=2)
-        box = ttk.Frame(page)
-        box.pack(side="left", fill="both", expand=True)
-        self.stree = ttk.Treeview(box, columns=("name", "count"), show="headings",
-                                  height=10, selectmode="extended")
-        self.stree.heading("name", text=t("col.session.name"), anchor="w")
-        self.stree.heading("count", text=t("col.session.count"), anchor="w")
-        self.stree.column("name", width=380, stretch=True)
-        self.stree.column("count", width=90, stretch=False, anchor="w")
-        sb = ttk.Scrollbar(box, orient="vertical", command=self.stree.yview)
-        self.stree.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.stree.pack(side="left", fill="both", expand=True)
-        self.stree.bind("<Double-1>", lambda e: self._s_edit())
-        self._fill_sessions()
-
-    def _fill_sessions(self, select=()):
-        """Show self.sessions in the list; `select` = indexes to select afterwards."""
-        self.stree.delete(*self.stree.get_children())
-        for i, s in enumerate(self.sessions):
-            self.stree.insert("", "end", iid=str(i), values=(s["name"], len(s["paths"])))
-        for i in select:
-            if 0 <= i < len(self.sessions):
-                self.stree.selection_add(str(i))
-
-    def _s_selected(self):
-        """@return the selected session indexes, ascending"""
-        return sorted(int(i) for i in self.stree.selection())
-
-    def _s_add(self):
-        """New session, pre-filled with the images of the open windows."""
-        dlg = SessionDialog(self, None, self.app.host.open_paths(),
-                            [s["name"] for s in self.sessions])
-        if dlg.result:
-            self.sessions.append(dlg.result)
-            self._fill_sessions([len(self.sessions) - 1])
-
-    def _s_edit(self):
-        """Edit the first selected session (name and images)."""
-        sel = self._s_selected()
-        if not sel:
-            return
-        i = sel[0]
-        taken = [s["name"] for j, s in enumerate(self.sessions) if j != i]
-        dlg = SessionDialog(self, self.sessions[i], taken=taken)
-        if dlg.result:
-            self.sessions[i] = dlg.result
-            self._fill_sessions([i])
-
-    def _s_remove(self):
-        """Remove the selected sessions (after asking)."""
-        sel = self._s_selected()
-        if sel and messagebox.askyesno(t("dlg.remove"), t("msg.remove_sessions", count=len(sel)),
-                                       parent=self):
-            self.sessions = [s for i, s in enumerate(self.sessions) if i not in sel]
-            self._fill_sessions()
-
-    def _s_move(self, step):
-        """Move the selected sessions up (-1) or down (+1)."""
-        sel = self._s_selected()
-        if not sel or sel[0] + step < 0 or sel[-1] + step >= len(self.sessions):
-            return
-        for i in (sel if step < 0 else sel[::-1]):
-            self.sessions[i], self.sessions[i + step] = self.sessions[i + step], self.sessions[i]
-        self._fill_sessions([i + step for i in sel])
-
-    # -- Appearance --------------------------------------------------------- #
-
-    def _tab_appearance(self, cfg):
-        """Language and theme."""
-        page = ttk.Frame(self.nb, padding=14)
-        self.nb.add(page, text=t("tab.appearance"))
-        page.columnconfigure(1, weight=1)
-        self.langs = list_languages()
-        self.lang_var = tk.StringVar()
-        self.lang_code = cfg["language"]
-        ttk.Label(page, text=t("field.language")).grid(row=0, column=0, sticky="w", pady=6)
-        self.lang_box = ttk.Combobox(page, textvariable=self.lang_var, state="readonly",
-                                     values=[n for _c, n in self.langs], width=30)
-        self.lang_box.grid(row=0, column=1, sticky="w", padx=(12, 0))
-        self.lang_box.bind("<<ComboboxSelected>>", self._on_lang)
-        self.theme_var = tk.StringVar()
-        ttk.Label(page, text=t("field.theme")).grid(row=1, column=0, sticky="w", pady=6)
-        self.theme_box = ttk.Combobox(page, textvariable=self.theme_var, state="readonly", width=30)
-        self.theme_box.grid(row=1, column=1, sticky="w", padx=(12, 0))
-        self.theme_box.bind("<<ComboboxSelected>>", self._on_theme)
-        ttk.Button(page, text=t("btn.theme_edit"), command=self._edit_theme).grid(
-            row=2, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
-        self._show_lang()
-        self._show_themes()
-
-    def _show_lang(self):
-        """Show the display name of the chosen language code."""
-        names = dict(self.langs)
-        self.lang_var.set(names.get(self.lang_code, names.get("en", self.lang_code)))
-
-    def _on_lang(self, _event=None):
-        """Remember the language picked in the box (as its code)."""
-        idx = self.lang_box.current()
-        if 0 <= idx < len(self.langs):
-            self.lang_code = self.langs[idx][0]
-
-    def _show_themes(self):
-        """Fill the theme box and select the chosen theme."""
-        self.themes = list_themes()
-        self.theme_box.configure(values=[n for _c, n in self.themes])
-        names = dict(self.themes)
-        self.theme_var.set(names.get(self.theme_code, self.theme_code))
-
-    def _on_theme(self, _event=None):
-        """Remember the theme picked in the box (as its code)."""
-        idx = self.theme_box.current()
-        if 0 <= idx < len(self.themes):
-            self.theme_code = self.themes[idx][0]
-
-    def _edit_theme(self):
-        """Open the theme editor; select the theme it saved."""
-        dlg = ThemeDialog(self, self.theme_code)
-        if dlg.result:
-            self.theme_code = dlg.result
-            self._show_themes()
-
-    # -- OK ----------------------------------------------------------------- #
-
     def _ok(self):
-        """Copy everything into the app config, save, close."""
+        """Copy everything into the config, save, apply to all windows, close."""
         cfg = self.app.cfg
         old = (cfg["language"], cfg["theme"])
-        cfg["enlarge_small"] = self.v_enlarge.get()
-        cfg["show_info"] = self.v_info.get()
-        cfg["toolbar"] = self.v_toolbar.get()
-        cfg["single_instance"] = self.v_single.get()
-        cfg["click_zoom"] = clamp_int(self.v_click.get(), 10, 3200, cfg["click_zoom"])
-        cfg["hold_zoom"] = clamp_int(self.v_hold.get(), 10, 3200, cfg["hold_zoom"])
-        cfg["hold_ms"] = clamp_int(self.v_ms.get(), 100, 2000, cfg["hold_ms"])
-        cfg["wheel"] = self.v_wheel.get() if self.v_wheel.get() in ("none", "navigate", "zoom") else "none"
-        cfg["apps"] = self.apps
-        cfg["sessions"] = self.sessions
-        cfg["language"] = resolve_language(self.lang_code)
-        cfg["theme"] = resolve_theme(self.theme_code)
+        cfg.update({k: v.get() for k, v in self.flags.items()})
+        for key, (lo, hi) in RANGES.items():
+            cfg[key] = clamp_int(self.nums[key].get(), lo, hi, cfg[key])
+        cfg["wheel"] = self.wheel.get()
+        cfg["apps"], cfg["sessions"] = self.apps, self.sessions
+        cfg["language"] = resolve_language(self._picked(self.lang_box, self.langs, cfg["language"]))
+        cfg["theme"] = resolve_theme(self._picked(self.theme_box, self.themes, cfg["theme"]))
         self.app.save_config()
-        self.app.apply_settings()
+        self.app.viewer.apply_all()
         parent = self.app
-        changed = old != (cfg["language"], cfg["theme"])
         self.destroy()
-        if changed:
+        if old != (cfg["language"], cfg["theme"]):
             messagebox.showinfo(t("dlg.restart"), t("msg.restart"), parent=parent)
 
 
 # --------------------------------------------------------------------------- #
-# Main window
+# Tab, window, program
 # --------------------------------------------------------------------------- #
 
 
-class App(tk.Toplevel):
+class Tab:
     """
-    One viewer window: a canvas that draws the current image, an on-screen
-    button bar, the context menu and the mouse / key controls.
+    One open image: its folder list, view state and rotations. It holds no
+    widgets, so a tab can move between windows. The decoded picture is only
+    kept while the tab is shown (unload() frees it); the view state stays.
 
-    View state:
-        mode "fit"   whole image, centered (scale from fit_scale)
-        mode "zoom"  scale / ox / oy: image pixel (0, 0) is drawn at canvas (ox, oy)
-    Rotation is only part of the view: self.rotations maps a file to its
-    quarter turns (clockwise); the image on disk is never touched.
+    View state: mode "fit" = whole image centered; mode "zoom" = scale / ox / oy,
+    image pixel (0, 0) is drawn at canvas (ox, oy). Rotation is only part of the
+    view: rot maps a file to its quarter turns clockwise.
     """
 
-    def __init__(self, host, start_path=None):
+    def __init__(self, path):
+        self.path, self.folder = path, os.path.dirname(path)
+        self.files, self.index = None, -1       # folder list; scanned when first shown
+        self.fmt = self.error = ""
+        self.base = self.img = None             # decoded (EXIF applied) / with view rotation
+        self.rot = {}
+        self.mode, self.scale, self.ox, self.oy = "fit", 1.0, 0.0, 0.0
+        self.fit_key = self.fit_photo = None
+
+    def label(self):
+        """@return the text of the tab: the file name, shortened"""
+        name = os.path.basename(self.path)
+        return name if len(name) <= 24 else name[:21] + "..."
+
+    def ensure(self, cfg):
+        """Scan the folder and decode the picture if that has not happened yet."""
+        if self.files is None:
+            self.files = scan_folder(self.folder)
+            for i, f in enumerate(self.files):
+                if same_file(f, self.path):
+                    self.index = i
+                    break
+            else:                                # unusual extension: still show it
+                self.files.append(self.path)
+                self.index = len(self.files) - 1
+        if self.base is None and not self.error:
+            self.load(cfg)
+
+    def load(self, cfg):
+        """Decode self.path. A failure is kept in self.error and shown instead of the picture."""
+        self.base = self.img = None
+        self.error = self.fmt = ""
+        try:
+            with Image.open(self.path) as im:
+                self.fmt = im.format or ""
+                im.load()
+                im = ImageOps.exif_transpose(im)
+                if im.mode not in ("RGB", "RGBA"):
+                    alpha = im.mode in ("LA", "PA") or "transparency" in im.info
+                    im = im.convert("RGBA" if alpha else "RGB")
+                self.base = im
+            cfg["last_path"] = os.path.abspath(self.path)
+        except Exception as exc:                 # Pillow raises many different types
+            self.error = t("msg.cannot_open", name=os.path.basename(self.path), error=exc)
+        self.rebuild(cfg)
+
+    def unload(self):
+        """Free the decoded picture (it is decoded again when the tab is shown)."""
+        self.base = self.img = self.fit_photo = self.fit_key = None
+
+    def go(self, cfg, step=None, index=None):
+        """Show another image of the folder: `step` from here (wraps), or the list position `index`."""
+        if self.files:
+            self.index = (self.index + step if index is None else index) % len(self.files)
+            self.path = self.files[self.index]
+            self.mode = "fit"
+            self.load(cfg)
+
+    def quarter(self, cfg):
+        """@return quarter turns clockwise shown now: auto rotation + the manual one"""
+        auto = 0
+        if self.base is not None and cfg["auto_rotate"]:
+            w, h = self.base.size
+            if (cfg["auto_rotate"] == "landscape" and h > w) or (cfg["auto_rotate"] == "portrait" and w > h):
+                auto = 3 if cfg["auto_dir"] == "ccw" else 1
+        return (auto + self.rot.get(self.path, 0)) % 4
+
+    def rebuild(self, cfg):
+        """Make self.img from self.base and the rotation."""
+        q = self.quarter(cfg)
+        self.img = None if self.base is None else (self.base.transpose(ROTATE_CW[q]) if q else self.base)
+        self.fit_key = None
+
+
+class Window(tk.Toplevel):
+    """
+    One viewer window: a tab bar (two or more tabs), a canvas that draws the
+    current tab, the on-screen buttons, the context menu and the controls.
+    """
+
+    TB_NEAR = 20
+    """Pixels around the button bar where the pointer still counts as "near"."""
+
+    def __init__(self, viewer, tabs=(), geometry=None):
         """
-        @param host        the Viewers object that owns the Tk root, the config and all windows
-        @param start_path  image file or folder to show first (optional)
+        @param viewer    the Viewer that owns the Tk root and the config
+        @param tabs      Tab objects to show (the first one is selected)
+        @param geometry  "WxH+X+Y" of the window; default = the saved one
         """
-        super().__init__(host.root)
+        super().__init__(viewer.root)
         self.withdraw()
-        self.host = host
-        self.cfg = host.cfg                # shared by all windows
+        self.viewer, self.cfg = viewer, viewer.cfg
         self.title(t("app.title", version=VERSION))
         self.minsize(360, 260)
         try:
-            self.geometry(self.cfg["geometry"])
+            self.geometry(geometry or self.cfg["geometry"])
         except tk.TclError:
             self.geometry(DEFAULTS["geometry"])
-
-        self.folder = ""
-        self.files = []
-        self.index = -1
-        self.path = ""
-        self.fmt = ""
-        self.base = None          # decoded image, EXIF orientation applied
-        self.img = None           # base with the view rotation applied
-        self.error = ""
-        self.rotations = {}
-        self.mode = "fit"
-        self.scale, self.ox, self.oy = 1.0, 0.0, 0.0
-        self.fullscreen = False
-        self._photo = None
-        self._fit_key = None
-        self._fit_photo = None
-        self._press = None
-        self._hold_job = None
-        self._tb_job = None
-        self._render_job = None
+        self.tabs, self.tab = [], None
+        self.fullscreen = self._closing = False
+        self._photo = self._press = self._hold_job = self._render_job = self._toast = None
         self._cursor = None
-        self._closing = False
-        self._toast = None
+        self.var_info, self.var_enlarge = tk.BooleanVar(), tk.BooleanVar()
+        self.var_auto, self.var_auto_mode, self.var_auto_dir = tk.StringVar(), tk.StringVar(), tk.StringVar()
 
-        if not start_path and self.cfg["last_path"] and os.path.isfile(self.cfg["last_path"]):
-            start_path = self.cfg["last_path"]     # started without a file: reopen the last one
-        self.var_info = tk.BooleanVar(value=self.cfg["show_info"])
-        self.var_enlarge = tk.BooleanVar(value=self.cfg["enlarge_small"])
-        self.var_auto_mode = tk.StringVar(value=self.cfg["auto_rotate"])
-        self.var_auto_dir = tk.StringVar(value=self.cfg["auto_dir"])
-
+        self.nb = ttk.Notebook(self, height=1, takefocus=False)    # tab bar only, no pages
+        self.nb.bind("<<NotebookTabChanged>>", self._tab_changed)
+        self.nb.bind("<Button-2>", self._tab_middle_click)
         self.cv = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=1)
         self.cv.pack(fill="both", expand=True)
         self._build_toolbar()
         self._init_dnd()
-        self.apply_settings()
         self._bind_all()
+        self.apply_settings()
         self.protocol("WM_DELETE_WINDOW", self.close)
-
         self.deiconify()
-        if self.cfg["zoomed"]:
+        if geometry is None and self.cfg["zoomed"]:
             self.after(60, lambda: self._set_zoomed(True))
         self.cv.focus_set()
-        if start_path:
-            self.after(30, lambda: self.open_path(start_path))
-        else:
-            self.render()
+        for tb in tabs:
+            self.add_tab(tb)
+        if tabs:
+            self.show_tab(tabs[0])
 
-    # -- config ------------------------------------------------------------- #
-
-    @staticmethod
-    def load_config():
-        """@return the config dict: defaults, overridden by the saved file"""
-        cfg = dict(DEFAULTS)
-        try:
-            with open(config_path(), "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError):
-            data = {}
-        if isinstance(data, dict):
-            cfg.update({k: v for k, v in data.items() if k in DEFAULTS})
-        if not isinstance(data, dict) or data.get("cfg_version", 1) < 2:
-            # Version 2 changed the defaults: wheel does nothing, hold delay 100,
-            # info off. Applied once to configs saved by version 1.
-            cfg["wheel"], cfg["hold_ms"], cfg["show_info"] = "none", 100, False
-        cfg["cfg_version"] = 2
-        if not isinstance(cfg["last_path"], str):
-            cfg["last_path"] = ""
-        cfg["apps"] = default_apps() if cfg["apps"] is None else clean_apps(cfg["apps"])
-        cfg["sessions"] = clean_sessions(cfg["sessions"])
-        old_quick = clean_paths(cfg["quick_session"])
-        if old_quick and not get_quick_session(cfg["sessions"]):
-            cfg["sessions"] = set_quick_session(cfg["sessions"], old_quick)
-        cfg["quick_session"] = []
-        cfg["click_zoom"] = clamp_int(cfg["click_zoom"], 10, 3200, 100)
-        cfg["hold_zoom"] = clamp_int(cfg["hold_zoom"], 10, 3200, 200)
-        cfg["hold_ms"] = clamp_int(cfg["hold_ms"], 100, 2000, 100)
-        if cfg["wheel"] not in ("none", "navigate", "zoom"):
-            cfg["wheel"] = "none"
-        if cfg["auto_rotate"] not in ("", "landscape", "portrait"):
-            cfg["auto_rotate"] = ""
-        if cfg["auto_dir"] not in ("cw", "ccw"):
-            cfg["auto_dir"] = "cw"
-        for key in ("enlarge_small", "show_info", "toolbar", "zoomed", "single_instance"):
-            cfg[key] = bool(cfg[key])
-        if not isinstance(cfg["geometry"], str):
-            cfg["geometry"] = DEFAULTS["geometry"]
-        return cfg
+    # -- settings ----------------------------------------------------------- #
 
     def save_config(self):
-        """Write the config (temporary file first). Shows an error box on failure."""
-        path = config_path()
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.cfg, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            os.replace(tmp, path)
-        except OSError as exc:
-            messagebox.showerror(t("dlg.error"), t("msg.save_failed", error=exc), parent=self)
+        save_config(self.cfg, self)
 
     def apply_settings(self):
-        """Take the values of self.cfg into the running window."""
-        self.var_info.set(self.cfg["show_info"])
-        self.var_enlarge.set(self.cfg["enlarge_small"])
+        """Take the values of the config into this window and redraw."""
+        c = self.cfg
+        self.var_info.set(c["show_info"])
+        self.var_enlarge.set(c["enlarge_small"])
         self.col_bg = resolve_color(self, "viewer", "canvas_bg") or "#000000"
         self.col_info = resolve_color(self, "viewer", "info_text") or "#e6e6e6"
         self.col_err = resolve_color(self, "viewer", "error_text") or "#ff6b6b"
         self.cv.configure(background=self.col_bg)
-        if not self.cfg["toolbar"]:
+        self._auto_text()
+        if not c["toolbar"]:
             self.tb.place_forget()
         self.render()
+
+    def open_settings(self, tab=0):
+        """Open the settings window (0 General, 1 Programs, 2 Sessions, 3 Appearance, 4 About)."""
+        SettingsDialog(self, tab)
+        self.cv.focus_set()
 
     # -- widgets ------------------------------------------------------------ #
 
     def _build_toolbar(self):
-        """The floating on-screen buttons (shown when the mouse moves)."""
+        """The floating on-screen buttons (shown while the mouse is near them)."""
         self.tb = ttk.Frame(self, padding=4, relief="solid", borderwidth=1)
-        self.var_auto = tk.StringVar()
-        items = (("◀", "tip.prev", lambda: self.go(-1)),
-                 ("▶", "tip.next", lambda: self.go(1)),
+        items = (("◀", "tip.prev", lambda: self.go(-1)), ("▶", "tip.next", lambda: self.go(1)),
                  ("↺", "tip.rotate_left", lambda: self.rotate(-1)),
                  ("↻", "tip.rotate_right", lambda: self.rotate(1)),
                  (t("btn.fit"), "tip.fit", self.toggle_fit),
                  ("50%", "tip.zoom50", lambda: self.zoom_to(50)),
                  ("75%", "tip.zoom75", lambda: self.zoom_to(75)),
-                 (t("btn.actual"), "tip.actual", lambda: self.zoom_to(100)))
+                 (t("btn.actual"), "tip.actual", lambda: self.zoom_to(100)),
+                 (None, "tip.auto", self.cycle_auto_rotate),
+                 ("⧉", "tip.new_window", self.new_window),
+                 ("⚙", "tip.settings", self.open_settings))
         for text, tip, cmd in items:
-            btn = ttk.Button(self.tb, text=text, width=max(3, len(text) + 1),
-                             command=cmd, takefocus=False)
+            if text is None:
+                btn = ttk.Button(self.tb, textvariable=self.var_auto, width=19, command=cmd, takefocus=False)
+            else:
+                btn = ttk.Button(self.tb, text=text, width=max(3, len(text) + 1), command=cmd,
+                                 takefocus=False)
             btn.pack(side="left", padx=2)
             Tip(btn, tip)
-        btn = ttk.Button(self.tb, textvariable=self.var_auto, width=19,
-                         command=self.cycle_auto_rotate, takefocus=False)
-        btn.pack(side="left", padx=2)
-        Tip(btn, "tip.auto")
-        btn = ttk.Button(self.tb, text="⚙", width=3, command=self.open_settings, takefocus=False)
-        btn.pack(side="left", padx=2)
-        Tip(btn, "tip.settings")
-        self._update_auto_text()
 
     def _bind_all(self):
         """Mouse and key bindings."""
@@ -1307,37 +1145,21 @@ class App(tk.Toplevel):
         cv.bind("<ButtonPress-1>", self.on_press)
         cv.bind("<B1-Motion>", self.on_drag)
         cv.bind("<ButtonRelease-1>", self.on_release)
-        # toolbar: bound on the window so motion over the canvas AND over the
-        # buttons themselves is seen; <Leave> hides it as soon as the pointer goes away
+        cv.bind("<Configure>", self.on_resize)
+        # bound on the window so motion over the canvas AND over the buttons is seen
         self.bind("<Motion>", self.poke_toolbar, add="+")
         self.bind("<Leave>", self.poke_toolbar, add="+")
-        cv.bind("<Configure>", self.on_resize)
-        ctx = ("<Button-2>", "<Control-Button-1>") if IS_MAC else ("<Button-3>",)
-        for seq in ctx:
+        self.bind("<FocusIn>", lambda e: setattr(self.viewer, "active", self))
+        for seq in (("<Button-2>", "<Control-Button-1>") if IS_MAC else ("<Button-3>",)):
             cv.bind(seq, self.show_context)
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             cv.bind(seq, self.on_wheel)
         self.bind("<Key>", self.on_key)
-        self.bind("<Control-w>", self.close)       # also fired when Caps Lock is on:
-        self.bind("<Control-W>", self.close)
         if IS_MAC:
-            try:
-                self.bind("<Command-w>", self.close)
-            except tk.TclError:
-                pass
-
-    # -- opening files ------------------------------------------------------ #
-
-    def raise_window(self):
-        """Restore the window if minimized and bring it to the front."""
-        if self.state() == "iconic": self.deiconify()
-        self.lift()
-        self.attributes("-topmost", True)
-        self.after(100, lambda: self.attributes("-topmost", False))
-        self.focus_force()
+            self.bind("<Command-w>", self.close_tab)
 
     def _init_dnd(self):
-        """Accept files dropped on the window (needs the optional tkinterdnd2; silently off without it)."""
+        """Accept files dropped on the window (needs the optional tkinterdnd2; off without it)."""
         self.dnd_ok = False
         if tkinterdnd2 is None:
             return
@@ -1352,230 +1174,260 @@ class App(tk.Toplevel):
             pass
 
     def _on_drop(self, data):
-        """
-        Drop handler: open the first dropped image file or folder.
-
-        @param data  Tcl list of dropped paths
-        @return      the drop action for tkdnd
-        """
-        for p in self.tk.splitlist(data):
-            if os.path.isdir(p) or (os.path.isfile(p)
-                                    and os.path.splitext(p)[1].lower() in IMAGE_EXTS):
-                self.after(0, lambda p=p: self.open_path(p))
-                break
+        """Drop handler: open the dropped image files and folders as tabs."""
+        paths = [p for p in self.tk.splitlist(data)
+                 if os.path.isdir(p) or os.path.splitext(p)[1].lower() in IMAGE_EXTS]
+        self.after(0, lambda: self.open_paths(paths))
         return "copy"
 
-    def open_path(self, path):
-        """
-        Show an image and load its folder for navigation. A folder shows its
-        first image.
+    def raise_window(self):
+        """Restore the window if minimized and bring it to the front."""
+        if self.state() == "iconic":
+            self.deiconify()
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(100, lambda: self.attributes("-topmost", False))
+        self.focus_force()
 
-        @param path  image file or folder
+    # -- tabs --------------------------------------------------------------- #
+
+    def find_tab(self, path):
+        """@return the tab that shows this file, or None"""
+        return next((tb for tb in self.tabs if same_file(tb.path, path)), None)
+
+    def paths(self):
+        """@return the files of the tabs of this window (existing files only)"""
+        return [os.path.abspath(tb.path) for tb in self.tabs if os.path.isfile(tb.path)]
+
+    def add_tab(self, tb):
+        """Append a tab (not selected)."""
+        self.tabs.append(tb)
+        self.nb.add(ttk.Frame(self.nb), text=tb.label())
+        self._sync_bar()
+
+    def _sync_bar(self):
+        """The tab bar is only visible with two or more tabs."""
+        if len(self.tabs) > 1:
+            self.nb.pack(side="top", fill="x", before=self.cv)
+        else:
+            self.nb.pack_forget()
+
+    def show_tab(self, tb):
+        """Select a tab."""
+        self.nb.select(self.tabs.index(tb))
+        self._activate(tb)
+
+    def _activate(self, tb):
+        """Make `tb` the shown tab: free the previous picture, load this one, redraw."""
+        if self.tab is not None and self.tab is not tb:
+            self.tab.unload()
+        self.tab = tb
+        tb.ensure(self.cfg)
+        self._title()
+        self.render()
+
+    def _tab_changed(self, _e=None):
+        """The user clicked a tab."""
+        i = self.nb.index("current") if self.tabs else -1
+        if 0 <= i < len(self.tabs) and self.tabs[i] is not self.tab:
+            self._activate(self.tabs[i])
+        self.cv.focus_set()
+
+    def _tab_middle_click(self, e):
+        """Middle click on a tab closes it."""
+        try:
+            i = self.nb.index("@%d,%d" % (e.x, e.y))
+        except tk.TclError:
+            return
+        self.close_tab(self.tabs[i])
+
+    def cycle_tab(self, step):
+        """Select the next (+1) / previous (-1) tab."""
+        if len(self.tabs) > 1:
+            self.show_tab(self.tabs[(self.tabs.index(self.tab) + step) % len(self.tabs)])
+
+    def _remove_tab(self, tb):
+        """Take a tab out of this window (the window stays, even without tabs)."""
+        i, was_shown = self.tabs.index(tb), tb is self.tab
+        tb.unload()
+        self.tabs.pop(i)
+        self.nb.forget(i)
+        self._sync_bar()
+        if not self.tabs:
+            self.tab = None
+        elif was_shown:
+            self.show_tab(self.tabs[min(i, len(self.tabs) - 1)])
+
+    def close_tab(self, tb=None):
+        """Ctrl+W: close a tab (default: the shown one); the last tab closes the window."""
+        tb = tb if isinstance(tb, Tab) else self.tab
+        if tb is None or len(self.tabs) <= 1:
+            self.close()
+        else:
+            self._remove_tab(tb)
+        return "break"
+
+    def new_window(self):
+        """Ctrl+N: move the shown tab into a new window; with a single tab: open an empty window."""
+        tb = self.tab if len(self.tabs) > 1 else None
+        if tb:
+            self._remove_tab(tb)
+        self.viewer.new_window([tb] if tb else [], cascade(self.winfo_geometry()))
+
+    def _title(self):
+        """Window title and tab text of the shown tab."""
+        tb = self.tab
+        if tb is None:
+            self.title(t("app.title", version=VERSION))
+            return
+        self.title(t("app.title_file", name=os.path.basename(tb.path), index=tb.index + 1,
+                     count=len(tb.files)))
+        self.nb.tab(self.tabs.index(tb), text=tb.label())
+
+    # -- opening files ------------------------------------------------------ #
+
+    def open_path(self, path, select=True):
+        """
+        Open an image as a tab (an image that is already open just gets its tab).
+        A folder opens its first image.
+
+        @param path    image file or folder
+        @param select  show the tab
+        @return        the Tab, or None if a folder has no images
         """
         path = os.path.abspath(path)
         if os.path.isdir(path):
             files = scan_folder(path)
             if not files:
                 messagebox.showinfo(APP_NAME, t("msg.no_folder_images"), parent=self)
-                return
+                return None
             path = files[0]
-        folder = os.path.dirname(path)
-        if not same_file(folder, self.folder or "") or not self.files:
-            self.rotations.clear()
-        self.folder = folder
-        self.files = scan_folder(folder)
-        for i, f in enumerate(self.files):
-            if same_file(f, path):
-                self.index = i
-                break
-        else:                                # unusual extension: still show it
-            self.files.append(path)
-            self.index = len(self.files) - 1
-        self.load(self.files[self.index])
+        tb = self.find_tab(path)
+        if tb is None:
+            tb = Tab(path)
+            self.add_tab(tb)
+        if select:
+            self.show_tab(tb)
+        return tb
+
+    def open_paths(self, paths):
+        """Open several images / folders as tabs and show the first."""
+        first = None
+        for p in paths:
+            tb = self.open_path(p, select=False)
+            first = first or tb
+        if first:
+            self.show_tab(first)
 
     def ask_open(self):
-        """File > Open: pick an image with the system dialog."""
-        pats = " ".join("*" + e for e in sorted(IMAGE_EXTS))
-        path = filedialog.askopenfilename(
-            parent=self, title=t("dlg.open"), initialdir=self.folder or None,
-            filetypes=[(t("filetype.images"), pats), (t("filetype.all"), "*.*")])
-        if path:
-            self.open_path(path)
+        """Ctrl+O: pick images with the system dialog."""
+        self.open_paths(pick_images(self, self.tab.folder if self.tab else None))
 
-    def load(self, path):
-        """
-        Decode one image and show it fitted. A failure shows the error text in
-        the window instead.
+    # -- navigation / rotation / zoom commands ------------------------------ #
 
-        @param path  image file
+    def _shown(self):
+        """@return the tab if it has a picture to show, else None"""
+        return self.tab if self.tab is not None and self.tab.img is not None else None
+
+    def go(self, step=None, index=None):
+        """Previous (-1) / next (+1) image of the folder, or the list position `index`."""
+        if self.tab:
+            self.tab.go(self.cfg, step, index)
+            self._title()
+            self.render()
+
+    def rotate(self, quarter):
         """
-        self.path = path
-        self.error = ""
-        self.fmt = ""
-        self.mode = "fit"
-        try:
-            with Image.open(path) as im:
-                self.fmt = im.format or ""
-                im.load()
-                im = ImageOps.exif_transpose(im)
-                if im.mode not in ("RGB", "RGBA"):
-                    alpha = im.mode in ("LA", "PA") or "transparency" in im.info
-                    im = im.convert("RGBA" if alpha else "RGB")
-                self.base = im
-            self.cfg["last_path"] = os.path.abspath(path)
-        except Exception as exc:             # Pillow raises many different types
-            self.base = None
-            self.error = t("msg.cannot_open", name=os.path.basename(path), error=exc)
-        self._rebuild_rotated()
-        self._update_title()
+        Rotate the VIEW of the shown image (the file is not changed).
+
+        @param quarter  +1 = clockwise, -1 = counter clockwise, 0 = reset
+        """
+        tb = self._shown()
+        if not tb:
+            return
+        new = 0 if quarter == 0 else (tb.rot.get(tb.path, 0) + quarter) % 4
+        if new:
+            tb.rot[tb.path] = new
+        else:
+            tb.rot.pop(tb.path, None)
+        tb.mode = "fit"
+        tb.rebuild(self.cfg)
         self.render()
 
-    def _rebuild_rotated(self):
-        """Make self.img from self.base and the view rotation of this file."""
-        quarter = self._quarter()
-        if self.base is None:
-            self.img = None
-        elif quarter:
-            self.img = self.base.transpose(ROTATE_CW[quarter])
-        else:
-            self.img = self.base
-        self._fit_key = None
-
-    def _quarter(self):
-        """@return quarter turns clockwise shown now: auto rotation + the manual one"""
-        auto = 0
-        mode = self.cfg["auto_rotate"]
-        if self.base is not None and mode:
-            w, h = self.base.size
-            if (mode == "landscape" and h > w) or (mode == "portrait" and w > h):
-                auto = 3 if self.cfg["auto_dir"] == "ccw" else 1
-        return (auto + self.rotations.get(self.path, 0)) % 4
-
-    def _update_auto_text(self):
-        """Button text and menu variable of the auto rotate mode."""
+    def _auto_text(self):
+        """Button text and menu variables of the auto rotate mode."""
         mode = self.cfg["auto_rotate"]
         arrow = "" if not mode else (" \u21ba" if self.cfg["auto_dir"] == "ccw" else " \u21bb")
         self.var_auto.set(t("btn.auto_" + (mode or "off")) + arrow)
         self.var_auto_mode.set(mode)
         self.var_auto_dir.set(self.cfg["auto_dir"])
 
-    def set_auto_rotate(self, mode):
+    def set_auto(self, mode=None, direction=None):
         """
-        Set the auto rotate mode and redraw.
+        Set the auto rotate mode and / or direction and redraw.
 
-        @param mode  "" = off, "landscape" or "portrait"
+        @param mode       "" = off, "landscape" or "portrait"
+        @param direction  "cw" or "ccw"
         """
-        self.cfg["auto_rotate"] = mode
-        self._update_auto_text()
-        self.mode = "fit"
-        self._rebuild_rotated()
-        self.render()
-
-    def set_auto_dir(self, direction):
-        """
-        Set the auto rotate direction and redraw.
-
-        @param direction  "cw" (clockwise) or "ccw" (counter clockwise)
-        """
-        self.cfg["auto_dir"] = direction
-        self._update_auto_text()
-        self.mode = "fit"
-        self._rebuild_rotated()
+        if mode is not None:
+            self.cfg["auto_rotate"] = mode
+        if direction:
+            self.cfg["auto_dir"] = direction
+        self._auto_text()
+        if self.tab:
+            self.tab.mode = "fit"
+            self.tab.rebuild(self.cfg)
         self.render()
 
     def cycle_auto_rotate(self):
         """Toolbar button: off -> landscape -> portrait -> off."""
         order = ("", "landscape", "portrait")
-        self.set_auto_rotate(order[(order.index(self.cfg["auto_rotate"]) + 1) % 3])
-
-    def _update_title(self):
-        """Window title: file name and position in the folder."""
-        if self.path:
-            self.title(t("app.title_file", name=os.path.basename(self.path),
-                         index=self.index + 1, count=len(self.files)))
-        else:
-            self.title(t("app.title", version=VERSION))
-
-    # -- navigation / rotation / zoom commands ------------------------------ #
-
-    def go(self, step):
-        """Show the previous (-1) / next (+1) image of the folder, wrapping around."""
-        if self.files:
-            self.index = (self.index + step) % len(self.files)
-            self.load(self.files[self.index])
-
-    def go_to(self, index):
-        """Show the image at a list position (negative counts from the end)."""
-        if self.files:
-            self.index = index % len(self.files)
-            self.load(self.files[self.index])
-
-    def rotate(self, quarter):
-        """
-        Rotate the VIEW of the current image (the file is not changed).
-
-        @param quarter  +1 = 90 degrees clockwise, -1 = counter clockwise,
-                        0 = reset
-        """
-        if self.base is None:
-            return
-        cur = self.rotations.get(self.path, 0)
-        new = 0 if quarter == 0 else (cur + quarter) % 4
-        if new:
-            self.rotations[self.path] = new
-        else:
-            self.rotations.pop(self.path, None)
-        self.mode = "fit"
-        self._rebuild_rotated()
-        self.render()
+        self.set_auto(order[(order.index(self.cfg["auto_rotate"]) + 1) % 3])
 
     def view_params(self):
         """
         @return  (scale, ox, oy) of what is drawn now; in zoom mode the offset
                  is first limited so the image never leaves a gap
         """
+        tb = self.tab
         cw, ch = self.cv.winfo_width(), self.cv.winfo_height()
-        iw, ih = self.img.size
-        if self.mode == "fit":
+        iw, ih = tb.img.size
+        if tb.mode == "fit":
             s = min(cw / iw, ch / ih)
             if not self.cfg["enlarge_small"]:
                 s = min(s, 1.0)
             return s, (cw - iw * s) / 2, (ch - ih * s) / 2
-        s = self.scale
-        for axis in (0, 1):
-            size = (iw, ih)[axis] * s
-            room = (cw, ch)[axis]
-            off = (self.ox, self.oy)[axis]
-            off = (room - size) / 2 if size <= room else min(0.0, max(room - size, off))
-            if axis == 0:
-                self.ox = off
-            else:
-                self.oy = off
-        return s, self.ox, self.oy
+        s = tb.scale
+        offs = []
+        for size, room, off in ((iw * s, cw, tb.ox), (ih * s, ch, tb.oy)):
+            offs.append((room - size) / 2 if size <= room else min(0.0, max(room - size, off)))
+        tb.ox, tb.oy = offs
+        return s, tb.ox, tb.oy
 
     def set_fit(self):
         """Back to "fit to window"."""
-        if self.img is not None:
-            self.mode = "fit"
+        tb = self._shown()
+        if tb:
+            tb.mode = "fit"
             self.render()
 
     def toggle_fit(self):
         """Fit width <-> fit height. From any other view: the side "fit to window" does not use."""
-        if self.img is None:
+        tb = self._shown()
+        if not tb:
             return
         cw, ch = self.cv.winfo_width(), self.cv.winfo_height()
-        iw, ih = self.img.size
+        iw, ih = tb.img.size
         sw, sh = cw / iw, ch / ih
-        if self.mode == "zoom" and abs(self.scale - sw) < 1e-4:
+        if tb.mode == "zoom" and abs(tb.scale - sw) < 1e-4:
             axis = "h"
-        elif self.mode == "zoom" and abs(self.scale - sh) < 1e-4:
+        elif tb.mode == "zoom" and abs(tb.scale - sh) < 1e-4:
             axis = "w"
         else:
             axis = "h" if sw < sh else "w"
         s = min(max(sw if axis == "w" else sh, MIN_SCALE), MAX_SCALE)
-        self.mode = "zoom"
-        self.scale = s
-        self.ox, self.oy = (cw - iw * s) / 2, 0.0
+        tb.mode, tb.scale = "zoom", s
+        tb.ox, tb.oy = (cw - iw * s) / 2, 0.0
         self.render()
 
     def zoom_to(self, percent, cx=None, cy=None):
@@ -1585,24 +1437,24 @@ class App(tk.Toplevel):
         @param percent  100 = actual size
         @param cx, cy   canvas point to zoom around (default: window center)
         """
-        if self.img is None:
+        tb = self._shown()
+        if not tb:
             return
         cw, ch = self.cv.winfo_width(), self.cv.winfo_height()
         cx = cw / 2 if cx is None else cx
         cy = ch / 2 if cy is None else cy
         s0, ox0, oy0 = self.view_params()
-        iw, ih = self.img.size
-        px = min(max((cx - ox0) / s0, 0), iw)      # image point under the cursor
+        iw, ih = tb.img.size
+        px = min(max((cx - ox0) / s0, 0), iw)          # image point under the cursor
         py = min(max((cy - oy0) / s0, 0), ih)
         s = min(max(percent / 100.0, MIN_SCALE), MAX_SCALE)
-        self.mode = "zoom"
-        self.scale = s
-        self.ox, self.oy = cx - px * s, cy - py * s
+        tb.mode, tb.scale = "zoom", s
+        tb.ox, tb.oy = cx - px * s, cy - py * s
         self.render()
 
     def zoom_step(self, factor, cx=None, cy=None):
         """Zoom in / out by a factor around a point."""
-        if self.img is not None:
+        if self._shown():
             self.zoom_to(self.view_params()[0] * factor * 100, cx, cy)
 
     def toggle_fullscreen(self, force=None):
@@ -1629,22 +1481,28 @@ class App(tk.Toplevel):
         except tk.TclError:
             pass
 
+    def toggle_info(self):
+        """Menu check item / I key: the variable already holds the new value."""
+        self.cfg["show_info"] = bool(self.var_info.get())
+        self.viewer.apply_all()
+
+    def toggle_enlarge(self):
+        """Menu check item: enlarge small images to fit the window."""
+        self.cfg["enlarge_small"] = bool(self.var_enlarge.get())
+        self.viewer.apply_all()
+
     # -- mouse -------------------------------------------------------------- #
 
     def on_press(self, e):
-        """
-        Button down. In fit mode a timer starts: if the button is still down
-        after hold_ms the view zooms to hold_zoom ("click and hold").
-        """
+        """Button down. In fit mode a timer starts: held for hold_ms = zoom to hold_zoom."""
         self.cv.focus_set()
-        self._press = {"x": e.x, "y": e.y, "lx": e.x, "ly": e.y,
-                       "moved": False, "hold": False, "fit": None}
+        self._press = {"x": e.x, "y": e.y, "lx": e.x, "ly": e.y, "moved": False, "hold": False, "fit": None}
         self._cancel_hold()
-        if self.img is not None and self.mode == "fit":
+        tb = self._shown()
+        if tb and tb.mode == "fit":
             self._hold_job = self.after(self.cfg["hold_ms"], self._begin_hold)
 
     def _cancel_hold(self):
-        """Stop the click-and-hold timer."""
         if self._hold_job:
             self.after_cancel(self._hold_job)
             self._hold_job = None
@@ -1652,37 +1510,36 @@ class App(tk.Toplevel):
     def _begin_hold(self):
         """The button was held long enough: zoom to hold_zoom at the press point."""
         self._hold_job = None
-        p = self._press
-        if p and not p["moved"] and self.img is not None and self.mode == "fit":
+        p, tb = self._press, self._shown()
+        if p and tb and not p["moved"] and tb.mode == "fit":
             p["hold"] = True
-            p["fit"] = self.view_params()          # where the fitted picture is
+            p["fit"] = self.view_params()              # where the fitted picture is
             self.hold_view(p, p["x"], p["y"])
 
     def hold_view(self, p, x, y):
         """
         Click-and-hold view: the mouse position inside the FITTED picture picks
-        the same relative position of the zoomed picture, so moving the mouse
-        to the bottom left of the picture shows the bottom left of the original.
+        the same relative position of the zoomed picture (mouse at the bottom
+        left of the picture = bottom left of the original).
 
         @param p     the press state (p["fit"] = (scale, ox, oy) of the fitted view)
         @param x, y  mouse position on the canvas
         """
+        tb = self.tab
         s0, fx, fy = p["fit"]
-        iw, ih = self.img.size
+        iw, ih = tb.img.size
         u = min(max((x - fx) / (iw * s0), 0.0), 1.0)
         v = min(max((y - fy) / (ih * s0), 0.0), 1.0)
         cw, ch = self.cv.winfo_width(), self.cv.winfo_height()
         s = min(max(self.cfg["hold_zoom"] / 100.0, MIN_SCALE), MAX_SCALE)
-        self.mode = "zoom"
-        self.scale = s
-        self.ox = u * (cw - iw * s)        # u = 0: left edges line up, u = 1: right edges
-        self.oy = v * (ch - ih * s)        # (view_params centers an axis that fits)
+        tb.mode, tb.scale = "zoom", s
+        tb.ox, tb.oy = u * (cw - iw * s), v * (ch - ih * s)     # view_params centers a fitting axis
         self.render()
 
     def on_drag(self, e):
         """Mouse moved with the button down: drag the picture when it is zoomed."""
-        p = self._press
-        if not p:
+        p, tb = self._press, self._shown()
+        if not p or not tb:
             return
         dx, dy = e.x - p["lx"], e.y - p["ly"]
         p["lx"], p["ly"] = e.x, e.y
@@ -1692,26 +1549,22 @@ class App(tk.Toplevel):
         if not p["moved"] and (abs(e.x - p["x"]) > DRAG_PX or abs(e.y - p["y"]) > DRAG_PX):
             p["moved"] = True
             self._cancel_hold()
-        if p["moved"] and self.mode == "zoom" and self.img is not None:
-            self.ox += dx
-            self.oy += dy
+        if p["moved"] and tb.mode == "zoom":
+            tb.ox += dx
+            tb.oy += dy
             self.render()
 
     def on_release(self, _e):
-        """
-        Button up:
-          - after a click-and-hold zoom: back to fit
-          - after a drag: nothing (the picture was only moved)
-          - plain click: fit -> click_zoom at the point, zoomed -> fit
-        """
+        """Button up: after a hold -> fit; after a drag -> nothing; plain click: fit <-> click_zoom."""
         p, self._press = self._press, None
         self._cancel_hold()
-        if not p or self.img is None:
+        tb = self._shown()
+        if not p or not tb:
             return
         if p["hold"]:
             self.set_fit()
         elif not p["moved"]:
-            if self.mode == "fit":
+            if tb.mode == "fit":
                 self.zoom_to(self.cfg["click_zoom"], p["x"], p["y"])
             else:
                 self.set_fit()
@@ -1720,14 +1573,8 @@ class App(tk.Toplevel):
         """Wheel: nothing (default), or previous / next image / zoom (swapped with Ctrl)."""
         if self.cfg["wheel"] == "none":
             return
-        if e.num == 4:
-            up = True
-        elif e.num == 5:
-            up = False
-        else:
-            up = e.delta > 0
-        ctrl = bool(e.state & 0x4)
-        if ctrl != (self.cfg["wheel"] == "zoom"):
+        up = e.num == 4 or (e.num != 5 and e.delta > 0)
+        if bool(e.state & 0x4) != (self.cfg["wheel"] == "zoom"):
             self.zoom_step(1.25 if up else 0.8, e.x, e.y)
         else:
             self.go(-1 if up else 1)
@@ -1736,32 +1583,36 @@ class App(tk.Toplevel):
 
     def on_key(self, e):
         """Keyboard shortcuts (see the module docstring)."""
-        ctrl = bool(e.state & 0x4) or (IS_MAC and bool(e.state & 0x8))
         key = e.keysym
-        if ctrl:
-            low = key.lower()
-            if low in ("w", "q", "cyrillic_tse", "cyrillic_shorti"):
-                return self.close()
-            if low in ("o", "cyrillic_shcha"):
+        if e.state & 0x4 or (IS_MAC and e.state & 0x8):
+            low = key.lower()                # the cyrillic names keep the shortcuts working on a Russian layout
+            if low in ("w", "cyrillic_tse"):
+                self.close_tab()
+            elif low in ("q", "cyrillic_shorti"):
+                self.close()
+            elif low in ("o", "cyrillic_shcha"):
                 self.ask_open()
+            elif low in ("n", "cyrillic_te"):
+                self.new_window()
             elif key == "comma":
                 self.open_settings()
+            elif key in ("Tab", "ISO_Left_Tab"):
+                self.cycle_tab(-1 if key == "ISO_Left_Tab" or e.state & 0x1 else 1)
             return
-        if key in ("Left", "Prior", "BackSpace"):
-            self.go(-1)
-        elif key in ("Right", "Next", "space"):
-            self.go(1)
+        steps = {"Left": -1, "Prior": -1, "BackSpace": -1, "Right": 1, "Next": 1, "space": 1}
+        zooms = {"1": 100, "2": 200}
+        if key in steps:
+            self.go(steps[key])
         elif key == "Home":
-            self.go_to(0)
+            self.go(index=0)
         elif key == "End":
-            self.go_to(-1)
+            self.go(index=-1)
         elif key == "F5":
             self.quick_save()
         elif key == "F11":
             self.toggle_fullscreen()
-        elif key == "Escape":
-            if self.fullscreen:
-                self.toggle_fullscreen(False)
+        elif key == "Escape" and self.fullscreen:
+            self.toggle_fullscreen(False)
         elif key == "r":
             self.rotate(1)
         elif key in ("R", "l", "L"):
@@ -1770,61 +1621,35 @@ class App(tk.Toplevel):
             self.toggle_fit()
         elif key == "0":
             self.set_fit()
-        elif key == "1":
-            self.zoom_to(100)
-        elif key == "2":
-            self.zoom_to(200)
+        elif key in zooms:
+            self.zoom_to(zooms[key])
         elif key in ("plus", "equal", "KP_Add"):
             self.zoom_step(1.25)
         elif key in ("minus", "KP_Subtract"):
             self.zoom_step(0.8)
         elif key in ("i", "I"):
+            self.var_info.set(not self.var_info.get())
             self.toggle_info()
-
-    def toggle_info(self):
-        """Show / hide the file info over the picture."""
-        self.cfg["show_info"] = not self.cfg["show_info"]
-        self.var_info.set(self.cfg["show_info"])
-        self.render()
-
-    def toggle_enlarge(self):
-        """Menu check item: enlarge small images to fit the window."""
-        self.cfg["enlarge_small"] = bool(self.var_enlarge.get())
-        self.render()
 
     # -- toolbar ------------------------------------------------------------ #
 
-    TB_NEAR = 20
-    """Pixels around the button bar where the pointer still counts as "near"."""
-
     def _pointer_near_toolbar(self):
-        """
-        Is the mouse pointer on or close to the place where the button bar sits
-        (bottom centre of the window)?
-
-        @return  True if the pointer is inside the bar's area plus TB_NEAR pixels
-        """
+        """@return True if the pointer is inside the window, on or near the bar's place (bottom centre)"""
         try:
             px, py = self.winfo_pointerxy()
         except tk.TclError:
             return False
-        x = px - self.winfo_rootx()
-        y = py - self.winfo_rooty()
+        x, y = px - self.winfo_rootx(), py - self.winfo_rooty()
         w, h = self.winfo_width(), self.winfo_height()
         if not (0 <= x < w and 0 <= y < h):
             return False
         bw, bh = self.tb.winfo_reqwidth(), self.tb.winfo_reqheight()
-        left = (w - bw) / 2 - self.TB_NEAR
-        right = (w + bw) / 2 + self.TB_NEAR
-        top = h - 18 - bh - self.TB_NEAR
-        return left <= x <= right and y >= top
+        near = self.TB_NEAR
+        return (w - bw) / 2 - near <= x <= (w + bw) / 2 + near and y >= h - 18 - bh - near
 
     def poke_toolbar(self, _e=None):
         """Show the button bar while the pointer is near it, hide it at once otherwise."""
-        if not self.cfg["toolbar"]:
-            self.tb.place_forget()
-            return
-        if self._pointer_near_toolbar():
+        if self.cfg["toolbar"] and self._pointer_near_toolbar():
             if not self.tb.winfo_ismapped():
                 self.tb.place(relx=0.5, rely=1.0, anchor="s", y=-18)
             self.tb.lift()
@@ -1840,52 +1665,47 @@ class App(tk.Toplevel):
         self._render_job = self.after(40, self.render)
 
     def render(self):
-        """Draw the current view: picture, info text or message."""
+        """Draw the shown tab: picture, info text or message."""
         self._render_job = None
-        cv = self.cv
+        cv, tb = self.cv, self.tab
         cv.delete("all")
         self._photo = None
         cw, ch = cv.winfo_width(), cv.winfo_height()
         if cw < 4 or ch < 4:
             return
-        if self.img is None:
+        if tb is None or tb.img is None:
             self._set_cursor("")
-            msg = self.error or t("msg.no_image")
-            cv.create_text(cw // 2, ch // 2, text=msg, width=max(cw - 60, 100), justify="center",
-                           fill=self.col_err if self.error else self.col_info)
+            err = tb.error if tb else ""
+            cv.create_text(cw // 2, ch // 2, text=err or t("msg.no_image"), width=max(cw - 60, 100),
+                           justify="center", fill=self.col_err if err else self.col_info)
             return
-        iw, ih = self.img.size
+        iw, ih = tb.img.size
         s, ox, oy = self.view_params()
-        x0 = max(0, int(math.floor(-ox / s)))
-        y0 = max(0, int(math.floor(-oy / s)))
-        x1 = min(iw, int(math.ceil((cw - ox) / s)))
-        y1 = min(ih, int(math.ceil((ch - oy) / s)))
+        x0, y0 = max(0, int(math.floor(-ox / s))), max(0, int(math.floor(-oy / s)))
+        x1, y1 = min(iw, int(math.ceil((cw - ox) / s))), min(ih, int(math.ceil((ch - oy) / s)))
         if x1 > x0 and y1 > y0:
-            key = (self.path, self._quarter(), self.mode, round(s, 5), cw, ch)
-            if self.mode == "fit" and self._fit_key == key:
-                photo = self._fit_photo
+            key = (tb.path, tb.quarter(self.cfg), tb.mode, round(s, 5), cw, ch)
+            if tb.mode == "fit" and tb.fit_key == key:
+                photo = tb.fit_photo
             else:
-                crop = self.img.crop((x0, y0, x1, y1))
-                dw = max(1, int(round((x1 - x0) * s)))
-                dh = max(1, int(round((y1 - y0) * s)))
+                crop = tb.img.crop((x0, y0, x1, y1))
+                dw, dh = max(1, int(round((x1 - x0) * s))), max(1, int(round((y1 - y0) * s)))
                 if s < 1:
                     factor = int(1 / s)
-                    if factor >= 2:           # cheap pre-shrink, then a good resize
+                    if factor >= 2:                   # cheap pre-shrink, then a good resize
                         crop = crop.reduce(factor)
                     crop = crop.resize((dw, dh), _RS.LANCZOS)
                 elif s > 1:
                     crop = crop.resize((dw, dh), _RS.BICUBIC)
                 photo = ImageTk.PhotoImage(crop)
-                if self.mode == "fit":
-                    self._fit_key, self._fit_photo = key, photo
+                if tb.mode == "fit":
+                    tb.fit_key, tb.fit_photo = key, photo
             self._photo = photo
-            cv.create_image(int(round(ox + x0 * s)), int(round(oy + y0 * s)),
-                            anchor="nw", image=photo)
-        self._set_cursor("fleur" if self.mode == "zoom" else "")
+            cv.create_image(int(round(ox + x0 * s)), int(round(oy + y0 * s)), anchor="nw", image=photo)
+        self._set_cursor("fleur" if tb.mode == "zoom" else "")
         if self.cfg["show_info"]:
-            text = "%s   %d/%d   %d\u00d7%d   %d%%" % (
-                os.path.basename(self.path), self.index + 1, len(self.files),
-                iw, ih, round(s * 100))
+            text = "%s   %d/%d   %d\u00d7%d   %d%%" % (os.path.basename(tb.path), tb.index + 1,
+                                                       len(tb.files), iw, ih, round(s * 100))
             cv.create_text(11, 9, text=text, anchor="nw", fill=self.col_bg)
             cv.create_text(10, 8, text=text, anchor="nw", fill=self.col_info)
 
@@ -1895,7 +1715,7 @@ class App(tk.Toplevel):
             self._cursor = cursor
             self.cv.configure(cursor=cursor)
 
-    # -- sessions ----------------------------------------------------------- #
+    # -- sessions (the tabs of this window only) ---------------------------- #
 
     def toast(self, text, ms=1800):
         """Show a short message at the bottom of the picture."""
@@ -1908,27 +1728,30 @@ class App(tk.Toplevel):
         lbl.after(ms, lambda: lbl.destroy() if self._toast is lbl else None)
 
     def quick_save(self):
-        """F5: remember the images of all open windows in the one quick slot."""
-        paths = self.host.open_paths()
-        if not paths:
-            return
-        self.cfg["sessions"] = set_quick_session(self.cfg["sessions"], paths)
-        self.save_config()
-        self.toast(t("msg.quick_saved", count=len(paths)))
+        """F5: save the tabs of this window as the session "Quick save (F5)"."""
+        paths = self.paths()
+        if paths:
+            self.cfg["sessions"] = upsert_session(self.cfg["sessions"], QUICK_NAME, paths)
+            self.save_config()
+            self.toast(t("msg.quick_saved", count=len(paths)))
 
     def save_session(self):
-        """Context menu: save the open windows as a named session (the dialog lets you review it)."""
+        """Context menu: save the tabs of this window as a named session (the dialog lets you edit it)."""
         names = [s["name"] for s in self.cfg["sessions"]]
-        dlg = SessionDialog(self, None, self.host.open_paths(), names, overwrite=True)
+        res = SessionDialog(self, None, self.paths(), names, overwrite=True).result
         self.cv.focus_set()
-        if not dlg.result:
-            return
-        sessions = [s for s in self.cfg["sessions"]
-                    if s["name"].lower() != dlg.result["name"].lower()]
-        sessions.append(dlg.result)
-        self.cfg["sessions"] = sessions
-        self.save_config()
-        self.toast(t("msg.session_saved", name=dlg.result["name"]))
+        if res:
+            self.cfg["sessions"] = upsert_session(self.cfg["sessions"], res["name"], res["paths"])
+            self.save_config()
+            self.toast(t("msg.session_saved", name=res["name"]))
+
+    def open_session(self, paths):
+        """Open the images of a session as tabs of this window; missing files are skipped and counted."""
+        found = [p for p in paths if os.path.isfile(p)]
+        self.open_paths(found)
+        if len(found) < len(paths):
+            messagebox.showinfo(APP_NAME, t("msg.session_missing", count=len(paths) - len(found)),
+                                parent=self)
 
     # -- context menu ------------------------------------------------------- #
 
@@ -1942,95 +1765,77 @@ class App(tk.Toplevel):
             menu.grab_release()
 
     def build_context_menu(self):
-        """
-        @return  the context menu: open with, file location, copy path,
-                 properties, rotate, zoom, navigation, settings, close
-        """
-        m = tk.Menu(self, tearoff=0)
-        have = bool(self.path) and os.path.exists(self.path)
-        state = "normal" if have else "disabled"
-        shown = "normal" if self.img is not None else "disabled"
+        """@return the context menu (open with, location, copy, rotate, zoom, session, windows)"""
+        tb = self.tab
+        path = os.path.abspath(tb.path) if tb else ""
+        have = "normal" if path and os.path.exists(path) else "disabled"
+        shown = "normal" if self._shown() else "disabled"
+        many = "normal" if tb and tb.files and len(tb.files) > 1 else "disabled"
 
+        def item(menu, key, cmd, state="normal", accel=""):
+            menu.add_command(label=t(key), command=cmd, state=state, accelerator=accel)
+
+        m = tk.Menu(self, tearoff=0)
         sub = tk.Menu(m, tearoff=0)
         for a in self.cfg["apps"]:
-            sub.add_command(label=a["name"], state=state,
-                            command=lambda a=a: self.run_app(a))
+            sub.add_command(label=a["name"], state=have, command=lambda a=a: self.run_app(a))
         if not self.cfg["apps"]:
             sub.add_command(label=t("menu.no_programs"), state="disabled")
         sub.add_separator()
-        sub.add_command(label=t("menu.manage_programs"), command=lambda: self.open_settings(1))
-        m.add_cascade(label=t("menu.open_with"), menu=sub, state=state)
-        m.add_command(label=t("menu.open_location"), state=state,
-                      command=lambda: self._safely(reveal_in_folder, self.path,
-                                                   "msg.location_failed"))
+        item(sub, "menu.manage_programs", lambda: self.open_settings(1))
+        m.add_cascade(label=t("menu.open_with"), menu=sub, state=have)
+        item(m, "menu.open_location", lambda: self._safely(reveal_in_folder, path), have)
         m.add_separator()
-        m.add_command(label=t("menu.copy_path"), state=state,
-                      command=lambda: self.copy_text(os.path.abspath(self.path)))
-        m.add_command(label=t("menu.copy_name"), state=state,
-                      command=lambda: self.copy_text(os.path.basename(self.path)))
-        m.add_command(label=t("menu.copy_folder"), state=state,
-                      command=lambda: self.copy_text(os.path.dirname(os.path.abspath(self.path))))
-        m.add_command(label=t("menu.properties"), state=state, command=self.show_properties)
+        for key, fn in (("menu.copy_path", lambda p: p), ("menu.copy_name", os.path.basename),
+                        ("menu.copy_folder", os.path.dirname)):
+            item(m, key, lambda fn=fn: self.copy_text(fn(path)), have)
+        item(m, "menu.properties", self.show_properties, have)
         m.add_separator()
-        m.add_command(label=t("menu.rotate_right"), state=shown, accelerator="R",
-                      command=lambda: self.rotate(1))
-        m.add_command(label=t("menu.rotate_left"), state=shown, accelerator="L",
-                      command=lambda: self.rotate(-1))
-        m.add_command(label=t("menu.rotate_reset"), state=shown,
-                      command=lambda: self.rotate(0))
+        for key, arg, accel in (("menu.rotate_right", 1, "R"), ("menu.rotate_left", -1, "L"),
+                                ("menu.rotate_reset", 0, "")):
+            item(m, key, lambda arg=arg: self.rotate(arg), shown, accel)
         m.add_separator()
-        m.add_command(label=t("menu.fit_toggle"), state=shown, accelerator="F",
-                      command=self.toggle_fit)
-        m.add_command(label=t("menu.fit"), state=shown, accelerator="0", command=self.set_fit)
-        m.add_command(label=t("menu.actual"), state=shown, accelerator="1",
-                      command=lambda: self.zoom_to(100))
-        m.add_command(label=t("menu.zoom200"), state=shown, accelerator="2",
-                      command=lambda: self.zoom_to(200))
+        item(m, "menu.fit_toggle", self.toggle_fit, shown, "F")
+        item(m, "menu.fit", self.set_fit, shown, "0")
+        item(m, "menu.actual", lambda: self.zoom_to(100), shown, "1")
+        item(m, "menu.zoom200", lambda: self.zoom_to(200), shown, "2")
         auto = tk.Menu(m, tearoff=0)
         for val, key in (("", "off"), ("landscape", "landscape"), ("portrait", "portrait")):
-            auto.add_radiobutton(label=t("menu.auto_" + key), variable=self.var_auto_mode,
-                                 value=val, command=lambda v=val: self.set_auto_rotate(v))
+            auto.add_radiobutton(label=t("menu.auto_" + key), variable=self.var_auto_mode, value=val,
+                                 command=lambda v=val: self.set_auto(mode=v))
         auto.add_separator()
         for val in ("cw", "ccw"):
-            auto.add_radiobutton(label=t("menu.auto_" + val), variable=self.var_auto_dir,
-                                 value=val, command=lambda v=val: self.set_auto_dir(v))
+            auto.add_radiobutton(label=t("menu.auto_" + val), variable=self.var_auto_dir, value=val,
+                                 command=lambda v=val: self.set_auto(direction=v))
         m.add_cascade(label=t("menu.auto_rotate"), menu=auto, state=shown)
         m.add_checkbutton(label=t("menu.enlarge_small"), variable=self.var_enlarge,
                           command=self.toggle_enlarge)
-        m.add_checkbutton(label=t("menu.show_info"), variable=self.var_info,
-                          accelerator="I", command=self.toggle_info_from_menu)
-        m.add_command(label=t("menu.fullscreen"), accelerator="F11",
-                      command=self.toggle_fullscreen)
+        m.add_checkbutton(label=t("menu.show_info"), variable=self.var_info, accelerator="I",
+                          command=self.toggle_info)
+        item(m, "menu.fullscreen", self.toggle_fullscreen, accel="F11")
         m.add_separator()
-        many = "normal" if len(self.files) > 1 else "disabled"
-        m.add_command(label=t("menu.prev"), state=many, accelerator="\u2190",
-                      command=lambda: self.go(-1))
-        m.add_command(label=t("menu.next"), state=many, accelerator="\u2192",
-                      command=lambda: self.go(1))
+        item(m, "menu.prev", lambda: self.go(-1), many, "\u2190")
+        item(m, "menu.next", lambda: self.go(1), many, "\u2192")
         m.add_separator()
         ses = tk.Menu(m, tearoff=0)
-        ses.add_command(label=t("menu.quick_save"), accelerator="F5", command=self.quick_save)
+        item(ses, "menu.quick_save", self.quick_save, accel="F5")
         ses.add_separator()
-        ses.add_command(label=t("menu.session_save"), command=self.save_session)
+        item(ses, "menu.session_save", self.save_session)
         opn = tk.Menu(ses, tearoff=0)
         for s in self.cfg["sessions"]:
             opn.add_command(label="%s (%d)" % (s["name"], len(s["paths"])),
-                            command=lambda s=s: self.host.open_session(s["paths"], self))
+                            command=lambda s=s: self.open_session(s["paths"]))
         if not self.cfg["sessions"]:
             opn.add_command(label=t("menu.no_sessions"), state="disabled")
         ses.add_cascade(label=t("menu.session_open"), menu=opn)
-        ses.add_command(label=t("menu.session_manage"), command=lambda: self.open_settings(2))
+        item(ses, "menu.session_manage", lambda: self.open_settings(2))
         m.add_cascade(label=t("menu.session"), menu=ses)
         m.add_separator()
-        m.add_command(label=t("menu.open_image"), accelerator="Ctrl+O", command=self.ask_open)
-        m.add_command(label=t("menu.settings"), accelerator="Ctrl+,", command=self.open_settings)
-        m.add_command(label=t("menu.close"), accelerator="Ctrl+W", command=self.close)
+        item(m, "menu.new_window", self.new_window, accel="Ctrl+N")
+        item(m, "menu.open_image", self.ask_open, accel="Ctrl+O")
+        item(m, "menu.settings", self.open_settings, accel="Ctrl+,")
+        item(m, "menu.close", self.close_tab, accel="Ctrl+W")
         return m
-
-    def toggle_info_from_menu(self):
-        """Menu check item: the variable was already flipped by the menu."""
-        self.cfg["show_info"] = bool(self.var_info.get())
-        self.render()
 
     def copy_text(self, text):
         """Put text on the clipboard."""
@@ -2038,23 +1843,23 @@ class App(tk.Toplevel):
         self.clipboard_append(text)
         self.update_idletasks()
 
-    def _safely(self, func, arg, msg_key="msg.launch_failed"):
+    def _safely(self, func, arg):
         """Call func(arg); show a message box if it raises OSError."""
         try:
             func(arg)
         except OSError as exc:
-            messagebox.showerror(t("dlg.error"), t(msg_key, error=exc), parent=self)
+            messagebox.showerror(t("dlg.error"), t("msg.location_failed", error=exc), parent=self)
 
     def run_app(self, app):
         """
-        Open the current image with an "Open with" program.
+        Open the shown image with an "Open with" program.
 
         @param app  {"name", "cmd"} entry of the Programs list
         """
-        if not self.path:
+        if not self.tab:
             return
         try:
-            argv = build_argv(app["cmd"], os.path.abspath(self.path))
+            argv = build_argv(app["cmd"], os.path.abspath(self.tab.path))
             kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                       "stderr": subprocess.DEVNULL}
             if IS_WIN:
@@ -2067,66 +1872,51 @@ class App(tk.Toplevel):
 
     def show_properties(self):
         """Show file facts: name, folder, size, dimensions, format, date, rotation."""
-        path = os.path.abspath(self.path)
+        tb = self.tab
+        path = os.path.abspath(tb.path)
         try:
             st = os.stat(path)
             size = "%s (%d B)" % (size_text(st.st_size), st.st_size)
             when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime))
         except OSError:
             size = when = "?"
-        dims = "%d \u00d7 %d" % self.base.size if self.base is not None else "?"
+        dims = "%d \u00d7 %d" % tb.base.size if tb.base is not None else "?"
         lines = [(t("prop.name"), os.path.basename(path)), (t("prop.folder"), os.path.dirname(path)),
-                 (t("prop.size"), size), (t("prop.dimensions"), dims),
-                 (t("prop.format"), self.fmt or "?"), (t("prop.modified"), when),
-                 (t("prop.rotation"), "%d\u00b0" % (90 * self._quarter()))]
-        messagebox.showinfo(t("dlg.properties"), "\n".join("%s: %s" % kv for kv in lines),
-                            parent=self)
-
-    def open_settings(self, tab=0):
-        """Open the settings window (tab 0 General, 1 Programs, 2 Sessions, 3 Appearance, 4 About)."""
-        SettingsDialog(self, tab)
-        self.cv.focus_set()
+                 (t("prop.size"), size), (t("prop.dimensions"), dims), (t("prop.format"), tb.fmt or "?"),
+                 (t("prop.modified"), when), (t("prop.rotation"), "%d\u00b0" % (90 * tb.quarter(self.cfg)))]
+        messagebox.showinfo(t("dlg.properties"), "\n".join("%s: %s" % kv for kv in lines), parent=self)
 
     # -- closing ------------------------------------------------------------ #
 
-    def save_ui(self):
-        """Remember window size / position, maximized state and the shown image (the last closed window wins)."""
-        zoomed = self._is_zoomed()
-        self.cfg["zoomed"] = zoomed
-        if self.base is not None: self.cfg["last_path"] = os.path.abspath(self.path)
-        if not zoomed and not self.fullscreen:
-            self.cfg["geometry"] = self.winfo_geometry()
-        self.save_config()
-
     def close(self, _e=None):
-        """Ctrl+W / window close: save the window state and close this window."""
+        """Close this window (all its tabs) and remember size / position and maximized state."""
         if self._closing:
             return "break"
         self._closing = True
-        try:
-            self.save_ui()
-        finally:
-            self.destroy()
-            self.host.closed(self)
+        zoomed = self._is_zoomed()
+        self.cfg["zoomed"] = zoomed
+        if not zoomed and not self.fullscreen:
+            self.cfg["geometry"] = self.winfo_geometry()
+        self.save_config()
+        self.destroy()
+        self.viewer.closed(self)
         return "break"
 
 
-class Viewers:
+class Viewer:
     """
-    The one program process: a hidden Tk root, the shared config and every
-    viewer window. With a listener (see claim_instance) it also opens the files
-    of later launches as new windows, so all windows share one Python / Tk /
-    Pillow footprint. The program ends with its last window.
+    The one program process: a hidden Tk root, the config and every window. With
+    a listener (see claim_instance) it also opens the files of later launches.
+    The program ends with its last window.
     """
 
     def __init__(self, cfg, listener=None):
         """
-        @param cfg       config dict (App.load_config()), shared by all windows
+        @param cfg       config dict (load_config()), shared by all windows
         @param listener  socket of claim_instance() that receives the files of later launches
         """
-        self.cfg = cfg
-        self.listener = listener
-        self.windows = []
+        self.cfg, self.listener = cfg, listener
+        self.windows, self.active = [], None
         self.inbox = queue.Queue()
         self.closing = False
         self.root = tk.Tk()
@@ -2140,89 +1930,63 @@ class Viewers:
         """
         Open the first window and run until the last one is closed.
 
-        @param path  image or folder of the command line (optional)
+        @param path  image or folder of the command line; none = reopen the last image
         """
-        self.open(path)
+        last = self.cfg["last_path"]
+        self.open(path or (last if os.path.isfile(last) else None))
         if self.listener:
             threading.Thread(target=self._serve, daemon=True).start()
             self._poll_inbox()
         self.root.mainloop()
 
+    def new_window(self, tabs=(), geometry=None):
+        """@return a new Window showing the given tabs"""
+        win = Window(self, tabs, geometry)
+        self.windows.append(win)
+        self.active = win
+        return win
+
     def open(self, path=None):
         """
-        Show an image in a new window; if a window already shows it, raise that
-        one. No path: raise the newest window (or open an empty one).
+        Open an image (or folder) as a tab of the window used last; an image
+        that is already open in any window just gets its tab selected. No path:
+        raise that window.
 
         @param path  image file or folder, or empty
         """
         if path:
+            path = os.path.abspath(path)
             for w in self.windows:
-                if w.path and same_file(w.path, path):
+                tb = w.find_tab(path)
+                if tb:
+                    w.show_tab(tb)
                     w.raise_window()
                     return
-        elif self.windows:
-            self.windows[-1].raise_window()
-            return
-        win = App(self, path or None)
-        self.windows.append(win)
-        if self.windows[1:]: win.raise_window()
+        win = self.active or (self.windows[-1] if self.windows else None)
+        fresh = win is None
+        if fresh:
+            win = self.new_window()
+        if path:
+            win.open_path(path)
+        if not fresh:
+            win.raise_window()
 
-    def open_paths(self):
-        """@return the image of every open window (existing files only, no duplicates)"""
-        out = []
+    def apply_all(self):
+        """Apply the config (settings, info, enlarge) to every window."""
         for w in self.windows:
-            if w.path and os.path.isfile(w.path):
-                p = os.path.abspath(w.path)
-                if not any(same_file(p, q) for q in out):
-                    out.append(p)
-        return out
-
-    def open_session(self, paths, parent=None):
-        """
-        Open a session: its images get one window each and every other open
-        window is closed. Windows that already show an image of the session are
-        kept. Missing files are skipped and counted. If no file of the session
-        exists, nothing is closed.
-
-        @param paths   image paths of the session
-        @param parent  window for the "skipped" message
-        """
-        found = [p for p in paths if os.path.isfile(p)]
-        missing = len(paths) - len(found)
-        old = list(self.windows)
-        for p in found:
-            self.open(p)
-        self.root.after(30, lambda: self._finish_session(old, found, missing, parent))
-
-    def _finish_session(self, old, found, missing, parent):
-        """
-        Second half of open_session, run after the new windows exist: close the
-        windows that are not part of the session, then report skipped files.
-
-        @param old      windows that were open before the session was opened
-        @param found    existing image paths of the session
-        @param missing  number of session files that do not exist
-        @param parent   preferred window for the message (used if it is still open)
-        """
-        if found:
-            for w in old:
-                if w in self.windows and not (w.path and any(same_file(w.path, p) for p in found)):
-                    w.close()
-        if missing and self.windows:
-            if parent is None or parent not in self.windows:
-                parent = self.windows[-1]
-            messagebox.showinfo(APP_NAME, t("msg.session_missing", count=missing), parent=parent)
+            w.apply_settings()
 
     def closed(self, win):
-        """
-        A window was closed; the program ends with the last one.
-
-        @param win  the closed App
-        """
-        if win in self.windows: self.windows.remove(win)
-        if self.windows: return
+        """A window was closed; the program ends with the last one."""
+        if win in self.windows:
+            self.windows.remove(win)
+        if self.active is win:
+            self.active = None
+        if self.windows:
+            return
         self.closing = True
-        if self.listener: self.listener.close()
+        if self.listener:
+            self.listener.close()
         self.root.destroy()
 
     def _serve(self):
@@ -2239,17 +2003,18 @@ class Viewers:
                     path = conn.recv()
             except (OSError, EOFError):
                 continue
-            if isinstance(path, str): self.inbox.put(path)
+            if isinstance(path, str):
+                self.inbox.put(path)
 
     def _poll_inbox(self):
         """Tk thread: open the paths that later launches sent."""
         while True:
             try:
-                path = self.inbox.get_nowait()
+                self.open(self.inbox.get_nowait())
             except queue.Empty:
                 break
-            self.open(path)
-        if not self.closing: self.root.after(150, self._poll_inbox)
+        if not self.closing:
+            self.root.after(150, self._poll_inbox)
 
 
 def main(argv):
@@ -2260,14 +2025,14 @@ def main(argv):
     """
     detach_console()
     path = argv[0] if argv else None
-    cfg = App.load_config()
+    cfg = load_config()
     listener = None
     if cfg["single_instance"]:
         forwarded, listener = claim_instance(path)
-        if forwarded: return
-    enable_hidpi()
-    set_app_id()
-    Viewers(cfg, listener).run(path)
+        if forwarded:
+            return
+    win_setup()
+    Viewer(cfg, listener).run(path)
 
 
 if __name__ == "__main__":
