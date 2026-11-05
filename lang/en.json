@@ -163,5 +163,12 @@
   "msg.remove_sessions": "Remove {count} session(s) from the list?",
   "tip.new_window": "New window (Ctrl+N)",
   "menu.new_window": "New window",
-  "opt.per_user_config": "Save the config per user (for shared installs: each user gets their own settings and sessions)"
+  "opt.per_user_config": "Save the config per user (for shared installs: each user gets their own settings and sessions)",
+  "tab.selected_bg": "Selected tab background",
+  "tab.selected_fg": "Selected tab text",
+  "tab.accent": "Line under the selected tab",
+  "tab.idle_fg": "Text of the other tabs",
+  "group.tab": "Tabs",
+  "tab.pad_x": "Tab padding, left and right (px)",
+  "tab.pad_y": "Tab padding, above and below (px)"
 }

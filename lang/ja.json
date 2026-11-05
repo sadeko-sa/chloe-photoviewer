@@ -163,5 +163,12 @@
   "msg.remove_sessions": "{count} 件のセッションを一覧から削除しますか？",
   "tip.new_window": "新しいウィンドウ (Ctrl+N)",
   "menu.new_window": "新しいウィンドウ",
-  "opt.per_user_config": "設定をユーザーごとに保存する（共有インストール用: ユーザーごとに設定とセッションを持ちます）"
+  "opt.per_user_config": "設定をユーザーごとに保存する（共有インストール用: ユーザーごとに設定とセッションを持ちます）",
+  "tab.selected_bg": "選択中タブの背景",
+  "tab.selected_fg": "選択中タブのテキスト",
+  "tab.accent": "選択中タブの下線",
+  "tab.idle_fg": "その他のタブのテキスト",
+  "group.tab": "タブ",
+  "tab.pad_x": "タブの余白・左右 (px)",
+  "tab.pad_y": "タブの余白・上下 (px)"
 }

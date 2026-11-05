@@ -82,7 +82,7 @@ from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.10.1"
+VERSION = "1.10.4"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"

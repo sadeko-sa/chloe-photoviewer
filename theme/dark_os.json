@@ -18,5 +18,13 @@
     "canvas_bg": "#101010",
     "info_text": "#e6e6e6",
     "error_text": "#ff7b72"
+  },
+  "tab": {
+    "selected_bg": "",
+    "selected_fg": "",
+    "accent": "#c17400",
+    "idle_fg": "",
+    "pad_x": "2",
+    "pad_y": "2"
   }
 }

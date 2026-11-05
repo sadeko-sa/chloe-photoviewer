@@ -13,7 +13,9 @@ Theme file layout (any entry may be missing, it then counts as empty):
       "theme_name": "Dark OS",            display name in Settings
       "ttk_theme": "clam",                ttk theme to switch to, "" = keep the system one
       "palette": {name: color, ...},      window and widget colors (see GROUPS)
-      "viewer":  {name: color, ...}       image area, info text, error text
+      "viewer":  {name: color, ...},      image area, info text, error text
+      "tab":     {name: value, ...}       tabs: colors (selected background / text, accent line,
+                                          idle text) and pad_x / pad_y (padding in pixels)
     }
 Colors are #rrggbb or a Tk color name. Only the names listed in GROUPS are
 read and written.
@@ -43,8 +45,19 @@ GROUPS = {
                 "thumb"),
     # The picture area.
     "viewer": ("canvas_bg", "info_text", "error_text"),
+    # Tabs. selected_bg empty = palette.bg. accent (the line under the selected
+    # tab) empty = palette.select_bg, then the system text color. selected_fg
+    # empty = palette.fg. idle_fg empty = palette.fg. pad_x / pad_y are not
+    # colors but the padding around the tab text in pixels (see NUMBER_NAMES).
+    "tab": ("selected_bg", "selected_fg", "accent", "idle_fg", "pad_x", "pad_y"),
 }
 """Every color of a theme: group -> color names. These are ids, not colors."""
+
+NUMBER_NAMES = (("tab", "pad_x"), ("tab", "pad_y"))
+"""Entries of GROUPS that hold a number of pixels (0-30) instead of a color."""
+
+TAB_PAD = (2, 2)
+"""Padding (horizontal, vertical) around the tab text when a theme sets none."""
 
 THEME_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "theme")
 """Folder with one JSON file per theme, named <code>.json."""
@@ -60,7 +73,9 @@ _active = {"code": "", "data": None}
 
 
 def _text(value):
-    """@return the stripped string, or "" if value is not a string"""
+    """@return the stripped string (an integer as text), or "" for anything else"""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
     return value.strip() if isinstance(value, str) else ""
 
 
@@ -190,6 +205,26 @@ def resolve_color(widget, group, name):
     return value
 
 
+def number_ok(value):
+    """@return True if value is empty (= default) or a whole number 0-30"""
+    return value == "" or (value.isdigit() and int(value) <= 30)
+
+
+def tab_pad():
+    """
+    Padding around the tab text of the active theme.
+
+    @return  (horizontal, vertical) in pixels; TAB_PAD for entries that are
+             empty or not a whole number 0-30
+    """
+    sub = _active["data"]["tab"]
+    out = []
+    for name, default in zip(("pad_x", "pad_y"), TAB_PAD):
+        value = sub[name]
+        out.append(int(value) if value and number_ok(value) else default)
+    return tuple(out)
+
+
 def color_label(group, name):
     """@return the language text for "group.name", or name if there is none"""
     key = "%s.%s" % (group, name)
@@ -286,14 +321,6 @@ def _style_ttk(style, p):
          selectbackground=[("readonly", field)],
          selectforeground=[("readonly", fg)])
 
-    _cfg(style, "TNotebook", background=bg, bordercolor=border,
-         tabmargins=(2, 3, 2, 0))
-    _cfg(style, "TNotebook.Tab", background=surface, foreground=fg,
-         bordercolor=border, padding=(12, 4))
-    _map(style, "TNotebook.Tab",
-         background=[("selected", bg), ("active", hi)],
-         foreground=[("selected", fg)])
-
     for name in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
         _cfg(style, name, background=thumb, troughcolor=field,
              bordercolor=field, arrowcolor=fg, darkcolor=thumb,
@@ -310,6 +337,138 @@ def _style_ttk(style, p):
     _map(style, "Treeview",
          background=[("selected", sel_bg)],
          foreground=[("selected", sel_fg)])
+
+
+_TAB_REFS = []
+"""PhotoImages of the tab element. Tk drops an image when its Python object is
+garbage collected, so they are kept here for the life of the program."""
+
+_TAB_PX = 8
+"""Width and height in pixels of the tab images (square; the middle stretches)."""
+
+_TAB_BAR = 3
+"""Thickness in pixels of the bottom edge of a tab image. Only the selected tab
+draws it in the accent color (IntelliJ style underline); idle and hover tabs
+draw it in their own fill color, so every tab keeps the same size."""
+
+
+def _hex(root, color, default):
+    """
+    Convert any Tk color (name, system color, #rgb) to #rrggbb, because
+    PhotoImage.put needs a plain color.
+
+    @param root     any Tk widget, used to resolve the color
+    @param color    color to convert
+    @param default  color used when Tk rejects `color`
+    @return         "#rrggbb"
+    """
+    try:
+        r, g, b = root.winfo_rgb(color)
+    except tk.TclError:
+        r, g, b = root.winfo_rgb(default)
+    return "#%02x%02x%02x" % (r >> 8, g >> 8, b >> 8)
+
+
+def _mix(root, color, other, amount):
+    """
+    Blend one color toward another.
+
+    @param amount  0.0 = color, 1.0 = other
+    @return        "#rrggbb"
+    """
+    r1, g1, b1 = root.winfo_rgb(color)
+    r2, g2, b2 = root.winfo_rgb(other)
+    mixed = [int((a * (1 - amount) + b * amount)) >> 8
+             for a, b in ((r1, r2), (g1, g2), (b1, b2))]
+    return "#%02x%02x%02x" % tuple(mixed)
+
+
+def _tab_image(root, fill, edge):
+    """
+    Make one tab image: a filled square with a colored strip along the bottom.
+
+    @param root   Tk root (owner of the image)
+    @param fill   inside color, "#rrggbb"
+    @param edge   color of the bottom strip, "#rrggbb"
+    @return       the PhotoImage (also kept alive in _TAB_REFS)
+    """
+    n = _TAB_PX
+    img = tk.PhotoImage(master=root, width=n, height=n)
+    img.put(fill, to=(0, 0, n, n))
+    img.put(edge, to=(0, n - _TAB_BAR, n, n))
+    _TAB_REFS.append(img)
+    return img
+
+
+def _style_tabs(style, root, p, tab):
+    """
+    Style the tabs so the selected one is easy to tell apart: it gets a colored
+    (accent) line along its bottom edge, like the tabs of IntelliJ.
+
+    The tabs are drawn by this program from images (a custom "FwTab.tab"
+    element), not by the ttk theme, so the look is the same on every ttk theme,
+    including native ones that ignore tab colors. It is applied for every
+    theme, also those with an empty palette (system look); colors that are not
+    set fall back to the system colors. The size of a tab is the same in every
+    state: selecting a tab never resizes it.
+
+    Colors: selected_bg falls back to palette.bg, then the system background;
+    idle tabs use palette.surface; selected_fg and idle_fg fall back to
+    palette.fg, then the system text color; accent falls back to
+    palette.select_bg, then the system text color softened toward the tab
+    background; a tab under the mouse uses palette.surface_hi. The padding
+    around the text is tab.pad_x / tab.pad_y (default TAB_PAD).
+
+    @param style  the ttk.Style
+    @param root   Tk root (owner of the images, resolves system colors)
+    @param p      palette colors {name: color}; "" = not set
+    @param tab    tab colors {selected_bg, selected_fg, accent, idle_fg}; "" = not set
+                  (the padding comes from tab_pad())
+    """
+    bg, surface, hi = p["bg"], p["surface"], p["surface_hi"]
+    fg, border = p["fg"], p["border"]
+    sys_fg = style.lookup(".", "foreground") or style.lookup("TLabel", "foreground") or "black"
+    accent = tab["accent"] or p["select_bg"] or sys_fg
+    idle_fg = tab["idle_fg"] or fg or sys_fg
+    sel_fg = tab["selected_fg"] or fg or sys_fg
+    hover_fg = fg or sys_fg
+
+    _cfg(style, "TNotebook", background=bg, bordercolor=border,
+         tabmargins=(2, 3, 2, 0))
+
+    system = _hex(root, root.cget("background"), "#d9d9d9")
+    idle_c = _hex(root, surface or system, system)
+    hover_c = _hex(root, hi or surface or system, system)
+    sel_c = _hex(root, tab["selected_bg"] or bg or system, system)
+    acc_c = _hex(root, accent or border or "#808080", "#808080")
+    if not (tab["accent"] or p["select_bg"]):
+        # No accent color anywhere: soften the system text color so the line
+        # is visible but not harsh (halfway between text and tab background).
+        try:
+            acc_c = _mix(root, accent, sel_c, 0.5)
+        except tk.TclError:
+            pass
+
+    idle_img = _tab_image(root, idle_c, idle_c)
+    hover_img = _tab_image(root, hover_c, hover_c)
+    sel_img = _tab_image(root, sel_c, acc_c)
+    if "FwTab.tab" not in style.element_names():
+        style.element_create("FwTab.tab", "image", idle_img,
+                             ("selected", sel_img), ("active", hover_img),
+                             border=(0, 0, 0, _TAB_BAR), sticky="nswe")
+    style.layout("TNotebook.Tab", [("FwTab.tab", {"sticky": "nswe", "children": [
+        ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+            ("Notebook.focus", {"side": "top", "sticky": "nswe", "children": [
+                ("Notebook.label", {"side": "top", "sticky": ""})]})]})]})])
+
+    # Same padding and no expansion in every state, so the size never changes.
+    pad = tab_pad()
+    _cfg(style, "TNotebook.Tab", foreground=idle_fg, padding=pad,
+         expand=(0, 0, 0, 0))
+    style.map("TNotebook.Tab", expand=[("selected", (0, 0, 0, 0))],
+              padding=[("selected", pad)])
+    _map(style, "TNotebook.Tab",
+         foreground=[("selected", sel_fg), ("active", hover_fg)])
 
 
 def _style_classic(root, p):
@@ -362,6 +521,11 @@ def apply_theme(root):
     if any(pal.values()):
         _style_ttk(style, pal)
         _style_classic(root, pal)
+    # Tabs are always styled (even with an empty palette), so the selected tab
+    # is marked in every theme.
+    tab = {name: resolve_color(root, "tab", name) for name in GROUPS["tab"]
+           if ("tab", name) not in NUMBER_NAMES}
+    _style_tabs(style, root, pal, tab)
 
 
 # --------------------------------------------------------------------------- #
@@ -451,16 +615,17 @@ class ThemeDialog(tk.Toplevel):
                     row=row, column=0, sticky="w", pady=3)
                 ttk.Label(tab, text="%s.%s" % (group, name), width=id_w).grid(
                     row=row, column=1, sticky="w", padx=(12, 0))
-                box = tk.Label(tab, width=8, relief="solid", borderwidth=1)
-                box.grid(row=row, column=2, padx=8)
-                self.swatches[key] = box
                 var = tk.StringVar()
                 self.vars[key] = var
+                if key not in NUMBER_NAMES:
+                    box = tk.Label(tab, width=8, relief="solid", borderwidth=1)
+                    box.grid(row=row, column=2, padx=8)
+                    self.swatches[key] = box
+                    ttk.Button(tab, text=t("btn.pick"),
+                               command=lambda g=group, n=name: self._pick(g, n)
+                               ).grid(row=row, column=4, padx=(5, 0))
                 var.trace_add("write", lambda *a, k=key: self._swatch(k))
                 ttk.Entry(tab, textvariable=var, width=12).grid(row=row, column=3)
-                ttk.Button(tab, text=t("btn.pick"),
-                           command=lambda g=group, n=name: self._pick(g, n)
-                           ).grid(row=row, column=4, padx=(5, 0))
 
         self._load(self.code)
         self.update_idletasks()
@@ -504,7 +669,10 @@ class ThemeDialog(tk.Toplevel):
             "palette.thumb": "gray60",
             "viewer.canvas_bg": "black", "viewer.info_text": "white",
             "viewer.error_text": "#ff6b6b",
-        }[spec]
+        }[spec] if not spec.startswith("tab.") else self._pcolor({
+            "tab.selected_bg": "palette.bg", "tab.selected_fg": "palette.fg",
+            "tab.accent": "palette.select_bg", "tab.idle_fg": "palette.fg",
+        }[spec])
 
     def _pv_add(self, widget, **opts):
         """Register a preview widget with option -> color spec, return it."""
@@ -521,9 +689,23 @@ class ThemeDialog(tk.Toplevel):
 
         tabs = add(tk.Frame(root), background="palette.bg")
         tabs.pack(fill="x")
-        for text, bg in ((t("tab.general"), "palette.bg"), (t("tab.programs"), "palette.surface")):
-            add(tk.Label(tabs, text=text, padx=10, pady=3, font=font),
-                background=bg, foreground="palette.fg").pack(side="left", padx=(0, 2))
+        # First tab is the selected one: tab colors and an accent line along its
+        # bottom edge. Second tab is idle: surface color, no line. Same size.
+        self._pv_tabs = []
+        sel = add(tk.Frame(tabs), background="palette.bg")
+        sel.pack(side="left", padx=(0, 2))
+        lab = add(tk.Label(sel, text=t("tab.general"), font=font),
+                  background="tab.selected_bg", foreground="tab.selected_fg")
+        lab.pack()
+        self._pv_tabs.append(lab)
+        add(tk.Frame(sel, height=3), background="tab.accent").pack(fill="x")
+        idle = add(tk.Frame(tabs), background="palette.bg")
+        idle.pack(side="left", padx=(0, 2))
+        lab = add(tk.Label(idle, text=t("tab.programs"), font=font),
+                  background="palette.surface", foreground="tab.idle_fg")
+        lab.pack()
+        self._pv_tabs.append(lab)
+        add(tk.Frame(idle, height=3), background="palette.surface").pack(fill="x")
 
         row = add(tk.Frame(root), background="palette.bg")
         row.pack(fill="x", pady=(8, 0))
@@ -569,6 +751,13 @@ class ThemeDialog(tk.Toplevel):
             return
         for widget, opts in self._pv:
             widget.configure(**{opt: self._pcolor(spec) for opt, spec in opts.items()})
+        # Tab text padding from the entries (same rules as tab_pad()).
+        pads = []
+        for name, default in zip(("pad_x", "pad_y"), TAB_PAD):
+            value = self.vars[("tab", name)].get().strip()
+            pads.append(int(value) if value and number_ok(value) else default)
+        for lab in self._pv_tabs:
+            lab.configure(padx=pads[0], pady=pads[1])
 
     # -- dialog plumbing ---------------------------------------------------- #
 
@@ -603,7 +792,9 @@ class ThemeDialog(tk.Toplevel):
     def _swatch(self, key):
         """Fill one swatch with its entry's color ("system" / "invalid")."""
         color = self.vars[key].get().strip()
-        if not color:
+        if key in NUMBER_NAMES:
+            pass            # a number has no swatch; only the preview changes
+        elif not color:
             self.swatches[key].configure(background=self.plain, text=t("val.unset"))
         elif self._valid(color):
             self.swatches[key].configure(background=color, text="")
@@ -665,7 +856,8 @@ class ThemeDialog(tk.Toplevel):
         data = self._collect()
         bad = ["%s.%s  (%s)" % (g, n, color_label(g, n))
                for g, names in GROUPS.items() for n in names
-               if not self._valid(data[g][n])]
+               if not (number_ok(data[g][n]) if (g, n) in NUMBER_NAMES
+                       else self._valid(data[g][n]))]
         if bad:
             messagebox.showerror(t("dlg.theme"),
                                  t("msg.theme_invalid", list="\n  ".join(bad)), parent=self)

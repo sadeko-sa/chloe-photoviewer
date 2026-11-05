@@ -116,6 +116,9 @@ Drop in a new file (copy `lang/en.json`, change `language.name`, translate the v
 Settings > Appearance. Missing entries fall back to English. A theme with an empty palette keeps the
 system look (`dark_os`, `light_os`); the other themes recolor everything.
 Edit a theme in Settings > Appearance > Edit theme..., or by hand while the program is closed.
+The `tab` group colors the tabs: `accent` is the line along the bottom edge of the selected tab (like IntelliJ), `selected_fg` / `idle_fg` the text of the selected / other tabs, `selected_bg` the selected tab background.
+Empty values fall back to the palette (`select_bg`, `fg`, `bg`), so the tabs are marked even in the system-look themes.
+`pad_x` / `pad_y` are the padding around the tab text in pixels (0-30; empty = 2). They are set per theme.
 
 ## Files
 
