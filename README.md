@@ -31,9 +31,9 @@ The click zoom (100%), hold zoom (200%) and hold delay (100 ms) can be changed i
 ## Keys
 
 Left / Right / Space / BackSpace / PageUp / PageDown = previous / next, Home / End = first / last,
-R / L = rotate right / left, F = fit width / height (toggle), 0 = fit to window, 1 / 2 = 100% / 200%, + / - = zoom, I = info,
+Q / E = rotate left / right, F = fit width / height (toggle), 1 / 2 = 100% / 200%, + / - = zoom, I = info,
 Ctrl+Tab / Ctrl+Shift+Tab = next / previous tab, Ctrl+N = new window, F5 = quick save (see Sessions), F11 = full screen (Esc leaves),
-Ctrl+O = open, Ctrl+, = settings, Ctrl+W = close tab (the last tab closes the window), Ctrl+Q = close window.
+Ctrl+O = open, Ctrl+, = settings, Ctrl+W = close tab (the last tab closes the window), Ctrl+Shift+T = reopen the last closed tab, Ctrl+Q = close window.
 
 ## Starting, "Open with" in Explorer
 
@@ -59,7 +59,7 @@ program simply runs as a normal separate window.
 
 Every image opens as a tab of the window; Open with, double click, drag and drop, Ctrl+O and sessions all add tabs.
 An image that is already open, in any window, just gets its tab selected. The tab bar only shows with two or more tabs.
-Each tab keeps its own zoom, position and rotation. Ctrl+W closes the tab, the last tab closes the window, middle click on a tab closes it.
+Each tab keeps its own zoom, position and rotation. Ctrl+W closes the tab, the last tab closes the window, middle click on a tab closes it. **Ctrl+Shift+T** reopens the last closed tab (up to 20, from any window) with its zoom and rotation.
 
 **Ctrl+N** (or the on-screen button / context menu) moves the current tab into a new window; with a single tab it opens an empty
 window. Windows do not share tabs. A session holds the tabs of the window it was saved from, but saved sessions are available to every window. Each window saves its own size and position when it closes (the last one closed wins).
@@ -92,20 +92,20 @@ Sessions are stored in the config file (`sessions`), so they are easy to back up
 ## Context menu
 
 Open with > (your programs), Open file location, Copy file path / name / folder path, Properties,
-Rotate right / left / Reset rotation, Fit width / height, Fit to window, 100%, 200%, Auto rotate >
+Rotate right / left / Reset rotation, Fit width / height, 100%, 200%, Auto rotate >
 (off / landscape / portrait, clockwise / counter-clockwise), Enlarge small images, Show info, Full screen,
 Previous / Next, Session > (Quick save, Save session as..., Open session >, Manage sessions...),
-New window, Open image, Settings, Close (tab).
+New window, Open image, Settings, Close (tab), Reopen closed tab.
 
 ## Settings (Ctrl+,)
 
-* **General** - zoom values, wheel behavior, show info / on-screen buttons, enlarge small images, single instance, config per user.
+* **General** - zoom values, wheel behavior, show info (pixel size, megapixels, file size, format, position in the folder, zoom, modified date) / on-screen buttons, enlarge small images, single instance, config per user.
 * **Programs** - add / edit / remove / reorder the programs of "Open with".
   Command: `{file}` = image path, `{dir}` = its folder; without `{file}` the path is added at the end.
   Examples: `gimp "{file}"`, `"C:\Program Files\Foo\foo.exe" "{file}"`, `flatpak run org.gimp.GIMP {file}`.
 * **Sessions** - add / edit / remove / reorder the saved sessions.
 * **Appearance** - language, theme, and the theme editor (live preview).
-* **About** - version and the Python / Pillow / Tk versions in use.
+* **About** - version, the Python / Pillow / Tk versions in use, and a button that opens the program folder.
 
 Language and theme are used from the next start.
 

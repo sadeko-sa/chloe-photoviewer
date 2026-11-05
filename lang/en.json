@@ -51,7 +51,6 @@
   "menu.rotate_left": "Rotate left",
   "menu.rotate_right": "Rotate right",
   "menu.rotate_reset": "Reset rotation",
-  "menu.fit": "Fit to window",
   "menu.actual": "Actual size (100%)",
   "menu.zoom200": "Zoom 200%",
   "menu.fullscreen": "Full screen",
@@ -170,5 +169,7 @@
   "tab.idle_fg": "Text of the other tabs",
   "group.tab": "Tabs",
   "tab.pad_x": "Tab padding, left and right (px)",
-  "tab.pad_y": "Tab padding, above and below (px)"
+  "tab.pad_y": "Tab padding, above and below (px)",
+  "about.open_folder": "Open app folder",
+  "menu.reopen_tab": "Reopen closed tab"
 }

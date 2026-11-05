@@ -51,7 +51,6 @@
   "menu.rotate_left": "左に回転",
   "menu.rotate_right": "右に回転",
   "menu.rotate_reset": "回転をリセット",
-  "menu.fit": "ウィンドウに合わせる",
   "menu.actual": "実寸表示 (100%)",
   "menu.zoom200": "200% 表示",
   "menu.fullscreen": "全画面",
@@ -170,5 +169,7 @@
   "tab.idle_fg": "その他のタブのテキスト",
   "group.tab": "タブ",
   "tab.pad_x": "タブの余白・左右 (px)",
-  "tab.pad_y": "タブの余白・上下 (px)"
+  "tab.pad_y": "タブの余白・上下 (px)",
+  "about.open_folder": "アプリのフォルダーを開く",
+  "menu.reopen_tab": "閉じたタブを開き直す"
 }

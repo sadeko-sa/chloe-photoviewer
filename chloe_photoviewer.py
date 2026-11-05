@@ -23,13 +23,14 @@ Mouse (FastStone style):
 
 Keys:
     Left / Right / Space / BackSpace / PageUp / PageDown   previous / next image
-    Home / End      first / last image          R / L   rotate right / left
-    F               fit width / height          0       fit to window
+    Home / End      first / last image          Q / E   rotate left / right
+    F               fit width / height
     1 / 2           100% / 200%                 + / -   zoom in / out
     I               show / hide info            F11     full screen (Esc leaves it)
     Ctrl+Tab        next tab (Shift: previous)  Ctrl+N  new window
     Ctrl+O          open image(s)               Ctrl+,  settings
     Ctrl+W          close tab                   Ctrl+Q  close window
+    Ctrl+Shift+T    reopen the last closed tab
     F5              quick save: the tabs of this window (session "quicksave")
 
 Only one program process runs (Settings > General > single instance): starting it
@@ -82,7 +83,7 @@ from chloe_theme import (ThemeDialog, apply_theme, list_themes, resolve_color,
                          resolve_theme, set_theme)
 
 APP_NAME = "Chloe Photoviewer"
-VERSION = "1.10.4"
+VERSION = "1.11.0"
 
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -94,6 +95,9 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".bmp", ".dib",
 
 _TR = getattr(Image, "Transpose", Image)        # Pillow 9.1 moved the constants into enums
 _RS = getattr(Image, "Resampling", Image)
+CLOSED_TABS_MAX = 20
+"""How many closed tabs Ctrl+Shift+T can bring back."""
+
 ROTATE_CW = {1: _TR.ROTATE_270, 2: _TR.ROTATE_180, 3: _TR.ROTATE_90}
 """Quarter turns clockwise -> Pillow transpose constant."""
 
@@ -502,6 +506,22 @@ def _select_in_explorer(path):
             raise OSError("SHOpenFolderAndSelectItems failed")
     finally:
         shell.ILFree(pidl)
+
+
+def open_folder(path):
+    """
+    Open a folder in the system file manager.
+
+    @param path  folder path
+    @raise OSError  if no file manager could be started
+    """
+    path = os.path.abspath(path)
+    if IS_WIN:
+        os.startfile(path)
+    elif IS_MAC:
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def reveal_in_folder(path):
@@ -992,6 +1012,15 @@ class SettingsDialog(Dialog):
             ttk.Label(grid, text=name).grid(row=row, column=0, sticky="nw", pady=2)
             ttk.Label(grid, text=value, wraplength=300, justify="left").grid(
                 row=row, column=1, sticky="w", padx=(12, 0), pady=2)
+        ttk.Button(page, text=t("about.open_folder"), command=self._open_app_folder).pack(
+            anchor="w", pady=(12, 0))
+
+    def _open_app_folder(self):
+        """Show the folder of the program in the file manager."""
+        try:
+            open_folder(os.path.dirname(os.path.abspath(__file__)))
+        except OSError as exc:
+            messagebox.showerror(t("dlg.error"), t("msg.location_failed", error=exc), parent=self)
 
     def _ok(self):
         """Copy everything into the config, save, apply to all windows, close."""
@@ -1032,6 +1061,7 @@ class Tab:
         self.path, self.folder = path, os.path.dirname(path)
         self.files, self.index = None, -1       # folder list; scanned when first shown
         self.fmt = self.error = ""
+        self.fsize = self.mtime = None          # file size in bytes / modified time (set by load)
         self.base = self.img = None             # decoded (EXIF applied) / with view rotation
         self.rot = {}
         self.mode, self.scale, self.ox, self.oy = "fit", 1.0, 0.0, 0.0
@@ -1060,6 +1090,11 @@ class Tab:
         """Decode self.path. A failure is kept in self.error and shown instead of the picture."""
         self.base = self.img = None
         self.error = self.fmt = ""
+        try:
+            st = os.stat(self.path)
+            self.fsize, self.mtime = st.st_size, st.st_mtime
+        except OSError:
+            self.fsize = self.mtime = None
         try:
             with Image.open(self.path) as im:
                 self.fmt = im.format or ""
@@ -1322,11 +1357,31 @@ class Window(tk.Toplevel):
     def close_tab(self, tb=None):
         """Ctrl+W: close a tab (default: the shown one); the last tab closes the window."""
         tb = tb if isinstance(tb, Tab) else self.tab
+        if tb is not None:
+            self.viewer.closed_tabs.append(tb)
+            del self.viewer.closed_tabs[:-CLOSED_TABS_MAX]
         if tb is None or len(self.tabs) <= 1:
             self.close()
         else:
             self._remove_tab(tb)
         return "break"
+
+    def reopen_tab(self):
+        """Ctrl+Shift+T: reopen the tab closed last (any window) in this window; files that are gone are skipped."""
+        stack = self.viewer.closed_tabs
+        while stack:
+            tb = stack.pop()
+            if not os.path.isfile(tb.path):
+                continue
+            for w in self.viewer.windows:            # already open again: just select it
+                found = w.find_tab(tb.path)
+                if found:
+                    w.show_tab(found)
+                    w.raise_window()
+                    return
+            self.add_tab(tb)
+            self.show_tab(tb)
+            return
 
     def new_window(self):
         """Ctrl+N: move the shown tab into a new window; with a single tab: open an empty window."""
@@ -1655,6 +1710,8 @@ class Window(tk.Toplevel):
                 self.ask_open()
             elif low in ("n", "cyrillic_te"):
                 self.new_window()
+            elif low in ("t", "cyrillic_ie") and e.state & 0x1:
+                self.reopen_tab()
             elif key == "comma":
                 self.open_settings()
             elif key in ("Tab", "ISO_Left_Tab"):
@@ -1674,14 +1731,12 @@ class Window(tk.Toplevel):
             self.toggle_fullscreen()
         elif key == "Escape" and self.fullscreen:
             self.toggle_fullscreen(False)
-        elif key == "r":
-            self.rotate(1)
-        elif key in ("R", "l", "L"):
+        elif key.lower() in ("q", "cyrillic_shorti"):
             self.rotate(-1)
+        elif key.lower() in ("e", "cyrillic_u"):
+            self.rotate(1)
         elif key in ("f", "F"):
             self.toggle_fit()
-        elif key == "0":
-            self.set_fit()
         elif key in zooms:
             self.zoom_to(zooms[key])
         elif key in ("plus", "equal", "KP_Add"):
@@ -1765,10 +1820,30 @@ class Window(tk.Toplevel):
             cv.create_image(int(round(ox + x0 * s)), int(round(oy + y0 * s)), anchor="nw", image=photo)
         self._set_cursor("fleur" if tb.mode == "zoom" else "")
         if self.cfg["show_info"]:
-            text = "%s   %d/%d   %d\u00d7%d   %d%%" % (os.path.basename(tb.path), tb.index + 1,
-                                                       len(tb.files), iw, ih, round(s * 100))
+            text = self.info_text(tb, iw, ih, s)
             cv.create_text(11, 9, text=text, anchor="nw", fill=self.col_bg)
             cv.create_text(10, 8, text=text, anchor="nw", fill=self.col_info)
+
+    def info_text(self, tb, iw, ih, scale):
+        """
+        The info over the picture (the file name is already in the window title):
+        line 1 = pixel size, megapixels, file size, format; line 2 = position in
+        the folder, zoom, modified date.
+
+        @param tb      the shown tab
+        @param iw, ih  size of the shown (rotated) picture in pixels
+        @param scale   current zoom, 1.0 = 100%
+        @return        the text, two lines
+        """
+        first = ["%d\u00d7%d" % (iw, ih), "%.1f MP" % (iw * ih / 1e6)]
+        if tb.fsize is not None:
+            first.append(size_text(tb.fsize))
+        if tb.fmt:
+            first.append(tb.fmt)
+        second = ["%d/%d" % (tb.index + 1, len(tb.files)), "%d%%" % round(scale * 100)]
+        if tb.mtime is not None:
+            second.append(time.strftime("%Y-%m-%d %H:%M", time.localtime(tb.mtime)))
+        return "   ".join(first) + "\n" + "   ".join(second)
 
     def _set_cursor(self, cursor):
         """Change the canvas cursor only when it differs."""
@@ -1852,12 +1927,11 @@ class Window(tk.Toplevel):
             item(m, key, lambda fn=fn: self.copy_text(fn(path)), have)
         item(m, "menu.properties", self.show_properties, have)
         m.add_separator()
-        for key, arg, accel in (("menu.rotate_right", 1, "R"), ("menu.rotate_left", -1, "L"),
+        for key, arg, accel in (("menu.rotate_right", 1, "E"), ("menu.rotate_left", -1, "Q"),
                                 ("menu.rotate_reset", 0, "")):
             item(m, key, lambda arg=arg: self.rotate(arg), shown, accel)
         m.add_separator()
         item(m, "menu.fit_toggle", self.toggle_fit, shown, "F")
-        item(m, "menu.fit", self.set_fit, shown, "0")
         item(m, "menu.actual", lambda: self.zoom_to(100), shown, "1")
         item(m, "menu.zoom200", lambda: self.zoom_to(200), shown, "2")
         auto = tk.Menu(m, tearoff=0)
@@ -1896,6 +1970,8 @@ class Window(tk.Toplevel):
         item(m, "menu.open_image", self.ask_open, accel="Ctrl+O")
         item(m, "menu.settings", self.open_settings, accel="Ctrl+,")
         item(m, "menu.close", self.close_tab, accel="Ctrl+W")
+        item(m, "menu.reopen_tab", self.reopen_tab,
+             "normal" if self.viewer.closed_tabs else "disabled", "Ctrl+Shift+T")
         return m
 
     def copy_text(self, text):
@@ -1983,6 +2059,7 @@ class Viewer:
         """
         self.cfg, self.listener = cfg, listener
         self.windows, self.active = [], None
+        self.closed_tabs = []              # tabs closed with Ctrl+W / middle click, newest last
         self.inbox = queue.Queue()
         self.closing = False
         self.root = tk.Tk()
